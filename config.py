@@ -24,8 +24,8 @@ RECORDING_FPS = 30
 INFERENCE_FPS = 30
 
 # === TRAINING PARAMETERS ===
-BATCH_SIZE = 16  # Adjusted for potentially larger model
-EPOCHS = 50
+BATCH_SIZE = 8  # Adjusted for potentially larger model
+EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 # === DATASET BALANCING & VALIDATION ===

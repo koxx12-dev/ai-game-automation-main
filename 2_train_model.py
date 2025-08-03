@@ -279,8 +279,8 @@ def train():
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
     print(f"\nTotal sequences: {len(full_dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=False)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=False) # Also disable for validation loader for consistency
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dim = len(COMMON_KEYS) + 4 # keys + mouse (x, y, l_click, r_click)

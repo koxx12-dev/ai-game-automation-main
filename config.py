@@ -24,7 +24,7 @@ RECORDING_FPS = 30
 INFERENCE_FPS = 30
 
 # === TRAINING PARAMETERS ===
-BATCH_SIZE = 32  # Adjusted for potentially larger model
+BATCH_SIZE = 16  # Adjusted for potentially larger model
 EPOCHS = 50
 LEARNING_RATE = 1e-4
 
@@ -50,21 +50,26 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_experiment"
 # === COMPREHENSIVE KEY MAPPING ===
 # This list defines the order and size of the keyboard action space for the model.
 COMMON_KEYS = [
-    # Alphanumeric
-    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
-    # Function keys
-    'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
-    # Modifier keys
-    'shift', 'ctrl', 'alt',
-    # Special keys
-    'space', 'enter', 'backspace', 'tab', 'escape',
-    'insert', 'delete', 'home', 'end', 'page_up', 'page_down',
-    # Arrow keys
-    'up', 'down', 'left', 'right',
-    # Symbol keys
-    '`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/',
+    ## Alphanumeric
+    #'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    #'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    #'1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+    ## Function keys
+    #'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+    ## Modifier keys
+    #'shift', 'ctrl', 'alt',
+    ## Special keys
+    #'space', 'enter', 'backspace', 'tab', 'escape',
+    #'insert', 'delete', 'home', 'end', 'page_up', 'page_down',
+    ## Arrow keys
+    #'up', 'down', 'left', 'right',
+    ## Symbol keys
+    #'`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/',
+    
+    "w","a","s","d",                        # Movement
+    "space","shift","ctrl",                 # Actions
+    "1","2","3","4","5",                    # Hotkeys
+    "q","e","r","f","tab","enter","escape", # Other
 ]
 
 # This dictionary maps the string representation to pynput key objects for inference.

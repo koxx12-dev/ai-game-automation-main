@@ -1,68 +1,109 @@
 import os
+from pynput import keyboard
 
 # === PATHS ===
-DATA_DIR       = "data_human"
-DATA_DIRS      = [DATA_DIR]
-FRAME_DIR      = os.path.join(DATA_DIR, "frames")
-ACTIONS_FILE   = "actions.npy"
+DATA_DIR = "data_human"
+DATA_DIRS = [DATA_DIR]  # You can add more data directories here
+FRAME_DIR = os.path.join(DATA_DIR, "frames")
+ACTIONS_FILE = "actions.npy"
 
-MODEL_FILE                 = "trained_model.pth"  # Final trained model (in root directory)
-MODEL_SAVE_DIR             = "game_model"         # Directory for epoch checkpoints
+MODEL_FILE = "trained_model.pth"  # Final trained model
+MODEL_SAVE_DIR = "game_model_checkpoints"  # Directory for epoch checkpoints
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-MODEL_SAVE_PATH_TEMPLATE   = os.path.join(MODEL_SAVE_DIR, "model_epoch{}.pt")
+MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 
-# === RECORDING & INFERENCE ===
-RECORDING_FPS          = 30
-INFERENCE_FPS          = 30
-IMG_WIDTH              = 720
-IMG_HEIGHT             = 480
+# === IMAGE & SEQUENCE SETTINGS ===
+# Unified image dimensions for recording, training, and inference.
+# The model's CNN is sensitive to this, so keep it consistent.
+IMG_WIDTH = 720
+IMG_HEIGHT = 480
+SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
+
+# === RECORDING & INFERENCE FPS ===
+RECORDING_FPS = 30
+INFERENCE_FPS = 30
 
 # === TRAINING PARAMETERS ===
-BATCH_SIZE             = 64
-EPOCHS                 = 30
-LEARNING_RATE          = 1e-4
+BATCH_SIZE = 32  # Adjusted for potentially larger model
+EPOCHS = 50
+LEARNING_RATE = 1e-4
 
 # === DATASET BALANCING & VALIDATION ===
 OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 15
-VALIDATION_SPLIT                   = 0.15
+VALIDATION_SPLIT = 0.15
+VALIDATION_WINDOW = 3  # Timesteps to aggregate for validation metrics
+THRESHOLD_SWEEP = [0.3, 0.4, 0.5, 0.6, 0.7] # For finding best validation threshold
 
-# Number of timesteps to aggregate in validation
-VALIDATION_WINDOW                  = 3
-
-# Thresholds to sweep when binarizing outputs
-THRESHOLD_SWEEP                    = [0.3, 0.4, 0.5, 0.6, 0.7]
-
-# === IMAGE SETTINGS (for model input) ===
-TRAIN_IMG_WIDTH       = 224
-TRAIN_IMG_HEIGHT      = 224
-
-# === SEQUENCE & ACTION SETTINGS ===
-SEQUENCE_LENGTH       = 5
-
-COMMON_KEYS = [
-    "w","a","s","d",           # Movement
-    "space","shift","ctrl",    # Actions
-    "1","2","3","4","5",       # Hotkeys
-    "q","e","r","f",           # Utility
-    "tab","enter","escape",    # UI
-]
-
-KEY_THRESHOLD          = 0.2
-CLICK_THRESHOLD        = 0.3
+# === INFERENCE ACTION THRESHOLDS ===
+KEY_THRESHOLD = 0.5  # Stricter threshold after validation
+CLICK_THRESHOLD = 0.5
 # Mouse smoothing parameters
-MOUSE_SMOOTHING_ALPHA  = 0.3  # For prediction smoothing (higher = more responsive)
-SMOOTH_FACTOR          = 0.6  # For movement smoothing (higher = faster movement)
-MOUSE_DEADZONE         = 2    # Minimum movement threshold in pixels
-
-# === LOSS WEIGHTS ===
-KEY_LOSS_WEIGHT         = 1.0
-POS_LOSS_WEIGHT         = 1.0
-CLICK_LOSS_WEIGHT       = 1.0
-SMOOTHNESS_LOSS_WEIGHT  = 0.05
+MOUSE_SMOOTHING_ALPHA = 0.3  # Prediction smoothing (higher=more responsive)
+SMOOTH_FACTOR = 0.6  # Movement smoothing (higher=faster)
+MOUSE_DEADZONE = 2  # Pixels
 
 # === EARLY STOPPING & TENSORBOARD ===
-EARLY_STOPPING_PATIENCE = 3
-EARLY_STOPPING_MIN_DELTA = 0.0
+EARLY_STOPPING_PATIENCE = 5
+EARLY_STOPPING_MIN_DELTA = 0.005 # Minimum F1 score improvement
+TENSORBOARD_LOG_DIR = "runs/behavior_cloning_experiment"
 
-# Directory for TensorBoard logs
-TENSORBOARD_LOG_DIR     = "runs/behavior_cloning_experiment"
+# === COMPREHENSIVE KEY MAPPING ===
+# This list defines the order and size of the keyboard action space for the model.
+COMMON_KEYS = [
+    # Alphanumeric
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+    # Function keys
+    'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+    # Modifier keys
+    'shift', 'ctrl', 'alt',
+    # Special keys
+    'space', 'enter', 'backspace', 'tab', 'escape',
+    'insert', 'delete', 'home', 'end', 'page_up', 'page_down',
+    # Arrow keys
+    'up', 'down', 'left', 'right',
+    # Symbol keys
+    '`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/',
+]
+
+# This dictionary maps the string representation to pynput key objects for inference.
+KEY_MAPPING = {
+    # Alphanumeric
+    **{char: keyboard.KeyCode.from_char(char) for char in "abcdefghijklmnopqrstuvwxyz1234567890"},
+    # Function keys
+    **{f'f{i}': getattr(keyboard.Key, f'f{i}') for i in range(1, 13)},
+    # Modifier keys
+    'shift': keyboard.Key.shift,
+    'ctrl': keyboard.Key.ctrl,
+    'alt': keyboard.Key.alt,
+    # Special keys
+    'space': keyboard.Key.space,
+    'enter': keyboard.Key.enter,
+    'backspace': keyboard.Key.backspace,
+    'tab': keyboard.Key.tab,
+    'escape': keyboard.Key.esc,
+    'insert': keyboard.Key.insert,
+    'delete': keyboard.Key.delete,
+    'home': keyboard.Key.home,
+    'end': keyboard.Key.end,
+    'page_up': keyboard.Key.page_up,
+    'page_down': keyboard.Key.page_down,
+    # Arrow keys
+    'up': keyboard.Key.up,
+    'down': keyboard.Key.down,
+    'left': keyboard.Key.left,
+    'right': keyboard.Key.right,
+    # Symbol keys
+    '`': keyboard.KeyCode.from_char('`'),
+    '-': keyboard.KeyCode.from_char('-'),
+    '=': keyboard.KeyCode.from_char('='),
+    '[': keyboard.KeyCode.from_char('['),
+    ']': keyboard.KeyCode.from_char(']'),
+    '\\': keyboard.KeyCode.from_char('\\'),
+    ';': keyboard.KeyCode.from_char(';'),
+    "'": keyboard.KeyCode.from_char("'"),
+    ',': keyboard.KeyCode.from_char(','),
+    '.': keyboard.KeyCode.from_char('.'),
+    '/': keyboard.KeyCode.from_char('/'),
+}

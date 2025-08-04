@@ -29,14 +29,14 @@ EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 # === DATASET BALANCING & VALIDATION ===
-OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 15
+OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 25
 VALIDATION_SPLIT = 0.15
 VALIDATION_WINDOW = 3  # Timesteps to aggregate for validation metrics
 THRESHOLD_SWEEP = [0.3, 0.4, 0.5, 0.6, 0.7] # For finding best validation threshold
 
 # === INFERENCE ACTION THRESHOLDS ===
-KEY_THRESHOLD = 0.5  # Stricter threshold after validation
-CLICK_THRESHOLD = 0.5
+KEY_THRESHOLD = 0.2  # Stricter threshold after validation
+CLICK_THRESHOLD = 0.3
 # Mouse smoothing parameters
 MOUSE_SMOOTHING_ALPHA = 0.3  # Prediction smoothing (higher=more responsive)
 SMOOTH_FACTOR = 0.6  # Movement smoothing (higher=faster)

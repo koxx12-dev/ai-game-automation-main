@@ -118,22 +118,34 @@ def on_press(key):
 def apply_output(output):
     """Interprets model output and converts it to keyboard/mouse actions."""
     global target_mouse_pos
-    
-    # Use sigmoid to convert logits to probabilities
-    probs = torch.sigmoid(output).detach().cpu().numpy()
-    
-    key_probs = probs[:len(COMMON_KEYS)]
-    mouse_x, mouse_y = probs[len(COMMON_KEYS)], probs[len(COMMON_KEYS) + 1]
-    left_click_prob, right_click_prob = probs[len(COMMON_KEYS) + 2], probs[len(COMMON_KEYS) + 3]
-    
+
+    num_keys = len(COMMON_KEYS)
+
+    # --- FIX: Process each output head correctly ---
+
+    # 1. Keys (Logits -> Sigmoid -> Probabilities)
+    key_logits = output[:num_keys]
+    key_probs = torch.sigmoid(key_logits).detach().cpu().numpy()
+
+    # 2. Mouse Position (Already Sigmoid-activated -> Use directly)
+    mouse_pos_output = output[num_keys : num_keys + 2].detach().cpu().numpy()
+    mouse_x, mouse_y = mouse_pos_output[0], mouse_pos_output[1]
+
+    # 3. Mouse Clicks (Logits -> Sigmoid -> Probabilities)
+    click_logits = output[num_keys + 2:]
+    click_probs = torch.sigmoid(click_logits).detach().cpu().numpy()
+    left_click_prob, right_click_prob = click_probs[0], click_probs[1]
+
+    # --- The rest of the function remains the same ---
+
     # Set target mouse position
     target_mouse_pos = (mouse_x * SCREEN_WIDTH, mouse_y * SCREEN_HEIGHT)
-    
+
     # Press/release keys based on threshold
     for i, key_str in enumerate(COMMON_KEYS):
         pynput_key = KEY_MAPPING.get(key_str)
         if not pynput_key: continue
-        
+
         is_pressed = key_probs[i] > KEY_THRESHOLD
         if is_pressed and key_str not in current_pressed_keys:
             keyboard_controller.press(pynput_key)
@@ -141,18 +153,18 @@ def apply_output(output):
         elif not is_pressed and key_str in current_pressed_keys:
             keyboard_controller.release(pynput_key)
             current_pressed_keys.remove(key_str)
-            
+
     # Handle mouse clicks
     left_click = left_click_prob > CLICK_THRESHOLD
     right_click = right_click_prob > CLICK_THRESHOLD
-    
+
     if left_click and Button.left not in current_mouse_buttons:
         mouse_controller.press(Button.left)
         current_mouse_buttons.add(Button.left)
     elif not left_click and Button.left in current_mouse_buttons:
         mouse_controller.release(Button.left)
         current_mouse_buttons.remove(Button.left)
-        
+
     if right_click and Button.right not in current_mouse_buttons:
         mouse_controller.press(Button.right)
         current_mouse_buttons.add(Button.right)

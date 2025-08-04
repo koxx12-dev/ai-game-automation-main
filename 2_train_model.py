@@ -240,7 +240,7 @@ def validate(model, dataloader, device, writer, epoch):
     writer.add_figure("Validation/ConfusionMatrix", fig, epoch)
     plt.close(fig)
 
-    return best_f1
+    return best_f1, best_thresh
 
 def find_free_port(start=6006, end=6099):
     """Finds an available port for TensorBoard."""
@@ -279,8 +279,9 @@ def train():
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
     print(f"\nTotal sequences: {len(full_dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=False)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=False) # Also disable for validation loader for consistency
+    num_workers_to_use = 4 
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=num_workers_to_use, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers_to_use, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dim = len(COMMON_KEYS) + 4 # keys + mouse (x, y, l_click, r_click)
@@ -316,32 +317,42 @@ def train():
             print(f"Epoch {epoch} Summary | Avg Loss: {avg_loss:.4f}")
 
             # Validation
-            val_f1 = validate(model, val_loader, device, writer, epoch)
-            writer.add_scalar("F1/validation", val_f1, epoch)
-            writer.add_scalar("LearningRate", optimizer.param_groups[0]['lr'], epoch)
-            scheduler.step(val_f1)
+            # MODIFICATION: Receive both F1 score and the best threshold
+            val_f1, best_thresh = validate(model, val_loader, device, writer, epoch) #
+            writer.add_scalar("F1/validation", val_f1, epoch) #
+            writer.add_scalar("LearningRate", optimizer.param_groups[0]['lr'], epoch) #
+            scheduler.step(val_f1) #
 
             # Early stopping check
-            early_stopper(val_f1)
-            if early_stopper.early_stop:
-                print(f"🛑 Early stopping triggered at epoch {epoch}.")
+            early_stopper(val_f1) #
+            if early_stopper.early_stop: #
+                print(f"🛑 Early stopping triggered at epoch {epoch}.") #
                 break
 
             # Save checkpoint
-            ckpt_path = MODEL_SAVE_PATH_TEMPLATE.format(epoch)
-            torch.save(model.state_dict(), ckpt_path)
+            ckpt_path = MODEL_SAVE_PATH_TEMPLATE.format(epoch) #
+            torch.save(model.state_dict(), ckpt_path) #
 
             # Save best model
-            if val_f1 > best_f1:
-                best_f1 = val_f1
-                torch.save(model.state_dict(), MODEL_FILE)
-                print(f"⭐ New best model saved to {MODEL_FILE} (F1={best_f1:.4f})")
+            if val_f1 > best_f1: #
+                best_f1 = val_f1 #
+                torch.save(model.state_dict(), MODEL_FILE) #
+                print(f"⭐ New best model saved to {MODEL_FILE} (F1={best_f1:.4f})") #
 
-    except KeyboardInterrupt:
-        print("\n⏹ Training interrupted by user. Saving final state...")
+                # Save the best threshold to a file alongside the model
+                best_threshold_path = os.path.join(os.path.dirname(MODEL_FILE), "best_threshold.txt") if os.path.dirname(MODEL_FILE) else "best_threshold.txt"
+                try:
+                    with open(best_threshold_path, "w") as f:
+                        f.write(str(best_thresh))
+                    print(f"   Saved best threshold ({best_thresh:.2f}) to {best_threshold_path}")
+                except Exception as e:
+                    print(f"   Could not save best threshold: {e}")
+
+    except KeyboardInterrupt: #
+        print("\n⏹ Training interrupted by user. Saving final state...") #
     finally:
-        writer.close()
-        print("\n✅ Training complete. TensorBoard logs saved.")
+        writer.close() #
+        print("\n✅ Training complete. TensorBoard logs saved.") #
 
 if __name__ == "__main__":
     train()

@@ -15,6 +15,7 @@ MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 # === IMAGE & SEQUENCE SETTINGS ===
 # Unified image dimensions for recording, training, and inference.
 # The model's CNN is sensitive to this, so keep it consistent.
+# Change to 360x240 to increase speed of model training significantly
 IMG_WIDTH = 720
 IMG_HEIGHT = 480
 SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
@@ -25,7 +26,7 @@ INFERENCE_FPS = 30
 
 # === TRAINING PARAMETERS ===
 BATCH_SIZE = 8  # Adjusted for potentially larger model
-EPOCHS = 5
+EPOCHS = 2
 LEARNING_RATE = 1e-4
 
 # === DATASET BALANCING & VALIDATION ===

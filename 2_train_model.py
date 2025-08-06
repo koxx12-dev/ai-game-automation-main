@@ -89,23 +89,22 @@ class WoWSequenceDataset(Dataset):
 
 # === NEW: POSITIONAL ENCODING ===
 class PositionalEncoding(nn.Module):
-    """Injects some information about the relative or absolute position of the tokens in the sequence."""
     def __init__(self, d_model, dropout=0.1, max_len=50):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # shape: [1, max_len, d_model]
         self.register_buffer('pe', pe)
 
     def forward(self, x):
         """
-        Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        x = x + self.pe[:x.size(0)]
+        x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
 # === UPDATED MODEL: TRANSFORMER ===

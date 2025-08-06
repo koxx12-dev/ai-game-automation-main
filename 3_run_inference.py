@@ -18,8 +18,7 @@ with mss.mss() as sct:
     monitor = sct.monitors[1]
 SCREEN_WIDTH, SCREEN_HEIGHT = monitor["width"], monitor["height"]
 
-# === CORRECTED: POSITIONAL ENCODING ===
-# This version matches the training script exactly.
+# === POSITIONAL ENCODING ===
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=50):
         super().__init__()
@@ -29,18 +28,14 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, d_model)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # shape: [1, max_len, d_model]
+        pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        """
-        x: Tensor, shape [batch_size, seq_len, embedding_dim]
-        """
         x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
 # === TRANSFORMER MODEL DEFINITION ===
-# This MUST be identical to the one in the training script.
 class BehaviorCloningTransformer(nn.Module):
     def __init__(self, output_dim, d_model, nhead, nlayers, dropout):
         super().__init__()
@@ -72,7 +67,7 @@ class BehaviorCloningTransformer(nn.Module):
         feat_reshaped = feat.view(b, s, -1)
         
         projected_feat = self.input_proj(feat_reshaped) * math.sqrt(self.d_model)
-        pos_encoded_feat = self.pos_encoder(projected_feat) # This forward call now matches the training script
+        pos_encoded_feat = self.pos_encoder(projected_feat)
         
         transformer_out = self.transformer_encoder(pos_encoded_feat)
         
@@ -85,12 +80,10 @@ class BehaviorCloningTransformer(nn.Module):
 device = torch.device("cpu")
 output_dim = len(COMMON_KEYS) + 4
 model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT)
-action_threshold = 0.5 # Default fallback
+action_threshold = 0.5
 
 try:
-    # Load the entire checkpoint
     checkpoint = torch.load(MODEL_FILE, map_location=device)
-    # Load the model's state dictionary from the checkpoint
     model.load_state_dict(checkpoint['model_state_dict'])
     print(f"✅ Model '{MODEL_FILE}' loaded successfully (trained for {checkpoint.get('epoch', 'N/A')} epochs).")
 
@@ -101,7 +94,7 @@ try:
         print(f"   Dynamically loaded action threshold: {action_threshold:.2f}")
     except FileNotFoundError:
         print(f"   Threshold file not found. Using defaults: KEY={KEY_THRESHOLD}, CLICK={CLICK_THRESHOLD}")
-        action_threshold = None # Signal to use separate config values
+        action_threshold = None
     except Exception as e:
         print(f"   Error loading threshold file: {e}. Using defaults.")
         action_threshold = None
@@ -142,14 +135,23 @@ def on_press(key):
         status = "ENABLED" if ai_enabled else "DISABLED"
         print(f"🤖 AI control is now {status}")
 
+# 🐛 FIXED: This function now correctly handles the model's output
 def apply_output(output):
     global target_mouse_pos
-    probs = torch.sigmoid(output).detach().cpu().numpy()
+    output = output.detach().cpu()
     
-    key_probs = probs[:len(COMMON_KEYS)]
-    mouse_x, mouse_y = probs[len(COMMON_KEYS)], probs[len(COMMON_KEYS) + 1]
-    left_click_prob, right_click_prob = probs[len(COMMON_KEYS) + 2], probs[len(COMMON_KEYS) + 3]
+    # Separate the output tensor into its components
+    num_keys = len(COMMON_KEYS)
+    key_logits = output[:num_keys]
+    mouse_pos = output[num_keys : num_keys+2]
+    click_logits = output[num_keys+2:]
+
+    # Apply sigmoid ONLY to the logits for keys and clicks
+    key_probs = torch.sigmoid(key_logits).numpy()
+    click_probs = torch.sigmoid(click_logits).numpy()
     
+    # The mouse position is already a probability, so we use it directly
+    mouse_x, mouse_y = mouse_pos[0].item(), mouse_pos[1].item()
     target_mouse_pos = (mouse_x * SCREEN_WIDTH, mouse_y * SCREEN_HEIGHT)
     
     key_thresh_to_use = action_threshold if action_threshold is not None else KEY_THRESHOLD
@@ -166,8 +168,8 @@ def apply_output(output):
             keyboard_controller.release(pynput_key)
             current_pressed_keys.remove(key_str)
             
-    left_click = left_click_prob > click_thresh_to_use
-    right_click = right_click_prob > click_thresh_to_use
+    left_click = click_probs[0] > click_thresh_to_use
+    right_click = click_probs[1] > click_thresh_to_use
     
     if left_click and Button.left not in current_mouse_buttons:
         mouse_controller.press(Button.left)

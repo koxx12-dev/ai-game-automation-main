@@ -179,7 +179,7 @@ def weighted_bce_mse_loss(outputs, targets):
     loss_clicks = bce_loss(click_out, click_tgt)
     loss_pos = mse_loss(pos_out, pos_tgt)
     
-    return loss_keys + loss_clicks + (loss_pos * 5) # Weight mouse position loss higher
+    return loss_keys + loss_clicks + (loss_pos * 2) # Weight mouse position loss higher
 
 # === VALIDATION ===
 def validate(model, dataloader, device, writer, epoch):

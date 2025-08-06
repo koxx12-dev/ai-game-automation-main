@@ -18,20 +18,25 @@ with mss.mss() as sct:
     monitor = sct.monitors[1]
 SCREEN_WIDTH, SCREEN_HEIGHT = monitor["width"], monitor["height"]
 
-# === POSITIONAL ENCODING ===
+# === CORRECTED: POSITIONAL ENCODING ===
+# This version matches the training script exactly.
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=50):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # shape: [1, max_len, d_model]
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0)]
+        """
+        x: Tensor, shape [batch_size, seq_len, embedding_dim]
+        """
+        x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
 # === TRANSFORMER MODEL DEFINITION ===
@@ -65,9 +70,12 @@ class BehaviorCloningTransformer(nn.Module):
         x_reshaped = x.view(b * s, c, h, w)
         feat = self.cnn(x_reshaped)
         feat_reshaped = feat.view(b, s, -1)
+        
         projected_feat = self.input_proj(feat_reshaped) * math.sqrt(self.d_model)
-        pos_encoded_feat = self.pos_encoder(projected_feat)
+        pos_encoded_feat = self.pos_encoder(projected_feat) # This forward call now matches the training script
+        
         transformer_out = self.transformer_encoder(pos_encoded_feat)
+        
         key_out = self.key_head(transformer_out)
         pos_out = self.mouse_pos_head(transformer_out)
         click_out = self.mouse_click_head(transformer_out)

@@ -14,20 +14,25 @@ MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 
 # === IMAGE & SEQUENCE SETTINGS ===
 # Unified image dimensions for recording, training, and inference.
-# The model's CNN is sensitive to this, so keep it consistent.
-# Change to 360 x 240 to increase speed of model training significantly - original 720 x 480
-IMG_WIDTH = 369
+IMG_WIDTH = 360
 IMG_HEIGHT = 240
 SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
 
 # === RECORDING & INFERENCE FPS ===
-RECORDING_FPS = 20
-INFERENCE_FPS = 20
+RECORDING_FPS = 30
+INFERENCE_FPS = 30
 
 # === TRAINING PARAMETERS ===
-BATCH_SIZE = 8  # Adjusted for potentially larger model
+BATCH_SIZE = 16
 EPOCHS = 2
 LEARNING_RATE = 1e-4
+
+# === TRANSFORMER MODEL PARAMETERS ===
+# These are used for the Transformer-based model architecture.
+D_MODEL = 256  # The dimension of the transformer model (embedding size)
+N_HEAD = 8     # Number of attention heads in the multi-head attention models
+N_LAYERS = 3   # Number of sub-encoder-layers in the transformer encoder
+DROPOUT = 0.1  # Dropout value
 
 # === DATASET BALANCING & VALIDATION ===
 OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 15
@@ -46,31 +51,15 @@ MOUSE_DEADZONE = 2  # Pixels
 # === EARLY STOPPING & TENSORBOARD ===
 EARLY_STOPPING_PATIENCE = 5
 EARLY_STOPPING_MIN_DELTA = 0.005 # Minimum F1 score improvement
-TENSORBOARD_LOG_DIR = "runs/behavior_cloning_experiment"
+TENSORBOARD_LOG_DIR = "runs/behavior_cloning_transformer_experiment"
 
 # === COMPREHENSIVE KEY MAPPING ===
 # This list defines the order and size of the keyboard action space for the model.
 COMMON_KEYS = [
-    ## Alphanumeric
-    #'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    #'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    #'1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
-    ## Function keys
-    #'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
-    ## Modifier keys
-    #'shift', 'ctrl', 'alt',
-    ## Special keys
-    #'space', 'enter', 'backspace', 'tab', 'escape',
-    #'insert', 'delete', 'home', 'end', 'page_up', 'page_down',
-    ## Arrow keys
-    #'up', 'down', 'left', 'right',
-    ## Symbol keys
-    #'`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/',
-    
-    "w","a","s","d",                        # Movement
-    "space","shift","ctrl",                 # Actions
-    "1","2","3","4","5",                    # Hotkeys
-    "q","e","r","v","tab",                  # Other
+    "w","a","s","d",                # Movement
+    "space","shift","ctrl",         # Actions
+    "1","2","3","4","5","6",        # Hotkeys
+    "e","r","tab",                  # Other
 ]
 
 # This dictionary maps the string representation to pynput key objects for inference.

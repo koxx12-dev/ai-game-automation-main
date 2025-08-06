@@ -4,6 +4,8 @@ import numpy as np
 import cv2
 import mss
 import time
+import math
+import os
 from collections import deque
 from pynput.keyboard import Controller as KeyboardController
 from pynput.mouse import Controller as MouseController, Button
@@ -16,10 +18,26 @@ with mss.mss() as sct:
     monitor = sct.monitors[1]
 SCREEN_WIDTH, SCREEN_HEIGHT = monitor["width"], monitor["height"]
 
-# === MODEL DEFINITION ===
+# === POSITIONAL ENCODING ===
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=50):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+# === TRANSFORMER MODEL DEFINITION ===
 # This MUST be identical to the one in the training script.
-class BehaviorCloningCNNRNN(nn.Module):
-    def __init__(self, output_dim):
+class BehaviorCloningTransformer(nn.Module):
+    def __init__(self, output_dim, d_model, nhead, nlayers, dropout):
         super().__init__()
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2), nn.BatchNorm2d(32), nn.ReLU(),
@@ -28,86 +46,73 @@ class BehaviorCloningCNNRNN(nn.Module):
             nn.AdaptiveAvgPool2d((6, 6)),
             nn.Flatten()
         )
-        
-        # FIX: Ensure dummy input uses the correct, consistent image dimensions
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, IMG_HEIGHT, IMG_WIDTH)
             cnn_out_size = self.cnn(dummy_input).shape[1]
         
-        self.lstm = nn.LSTM(
-            input_size=cnn_out_size,
-            hidden_size=256,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.2
-        )
-        
-        self.key_head = nn.Sequential(
-            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(0.2),
-            nn.Linear(128, len(COMMON_KEYS))
-        )
-        self.mouse_pos_head = nn.Sequential(
-            nn.Linear(256, 64), nn.ReLU(),
-            nn.Linear(64, 2), nn.Sigmoid()
-        )
-        self.mouse_click_head = nn.Sequential(
-            nn.Linear(256, 32), nn.ReLU(),
-            nn.Linear(32, 2)
-        )
+        self.input_proj = nn.Linear(cnn_out_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout, max_len=SEQUENCE_LENGTH)
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dropout=dropout, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, nlayers)
+        self.d_model = d_model
+
+        self.key_head = nn.Sequential(nn.Linear(d_model, len(COMMON_KEYS)))
+        self.mouse_pos_head = nn.Sequential(nn.Linear(d_model, 2), nn.Sigmoid())
+        self.mouse_click_head = nn.Sequential(nn.Linear(d_model, 2))
 
     def forward(self, x):
         b, s, c, h, w = x.shape
         x_reshaped = x.view(b * s, c, h, w)
         feat = self.cnn(x_reshaped)
         feat_reshaped = feat.view(b, s, -1)
-        lstm_out, _ = self.lstm(feat_reshaped)
-        lstm_out_reshaped = lstm_out.reshape(b * s, -1)
-        key_out = self.key_head(lstm_out_reshaped)
-        pos_out = self.mouse_pos_head(lstm_out_reshaped)
-        click_out = self.mouse_click_head(lstm_out_reshaped)
-        concat = torch.cat([key_out, pos_out, click_out], dim=1)
-        return concat.view(b, s, -1)
+        projected_feat = self.input_proj(feat_reshaped) * math.sqrt(self.d_model)
+        pos_encoded_feat = self.pos_encoder(projected_feat)
+        transformer_out = self.transformer_encoder(pos_encoded_feat)
+        key_out = self.key_head(transformer_out)
+        pos_out = self.mouse_pos_head(transformer_out)
+        click_out = self.mouse_click_head(transformer_out)
+        return torch.cat([key_out, pos_out, click_out], dim=2)
 
 # --- SETUP ---
-device = torch.device("cpu") #
-output_dim = len(COMMON_KEYS) + 4 #
-model = BehaviorCloningCNNRNN(output_dim) #
-action_threshold = 0.5 # Default fallback value
+device = torch.device("cpu")
+output_dim = len(COMMON_KEYS) + 4
+model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT)
+action_threshold = 0.5 # Default fallback
 
 try:
-    model.load_state_dict(torch.load(MODEL_FILE, map_location=device)) #
-    print(f"✅ Model '{MODEL_FILE}' loaded successfully.") #
+    # Load the entire checkpoint
+    checkpoint = torch.load(MODEL_FILE, map_location=device)
+    # Load the model's state dictionary from the checkpoint
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"✅ Model '{MODEL_FILE}' loaded successfully (trained for {checkpoint.get('epoch', 'N/A')} epochs).")
 
-    # Load the dynamically saved best threshold
-    threshold_path = os.path.join(os.path.dirname(MODEL_FILE), "best_threshold.txt") if os.path.dirname(MODEL_FILE) else "best_threshold.txt"
+    threshold_path = os.path.join(os.path.dirname(MODEL_FILE) or ".", "best_threshold.txt")
     try:
         with open(threshold_path, 'r') as f:
             action_threshold = float(f.read().strip())
         print(f"   Dynamically loaded action threshold: {action_threshold:.2f}")
     except FileNotFoundError:
-        print(f"   Threshold file not found. Using default from config: KEY={KEY_THRESHOLD}, CLICK={CLICK_THRESHOLD}")
-        # If file not found, use separate thresholds from config
-        action_threshold = None # Will signal to use config values
+        print(f"   Threshold file not found. Using defaults: KEY={KEY_THRESHOLD}, CLICK={CLICK_THRESHOLD}")
+        action_threshold = None # Signal to use separate config values
     except Exception as e:
         print(f"   Error loading threshold file: {e}. Using defaults.")
         action_threshold = None
 
-except Exception as e: #
-    print(f"❌ Error loading model: {e}") #
-    print("   Ensure you have a trained model file at the correct path.") #
-    exit(1) #
+except Exception as e:
+    print(f"❌ Error loading model: {e}")
+    print("   Ensure you have a trained model file at the correct path.")
+    exit(1)
 
 model.eval()
 keyboard_controller = KeyboardController()
 mouse_controller = MouseController()
 running = True
-ai_enabled = False # Start with AI disabled
+ai_enabled = False
 
 # --- STATE MANAGEMENT ---
 frame_sequence = deque(maxlen=SEQUENCE_LENGTH)
 current_pressed_keys = set()
 current_mouse_buttons = set()
-# Use a target position for smoothing, not direct setting
 target_mouse_pos = (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2)
 
 transform = transforms.Compose([
@@ -119,92 +124,73 @@ transform = transforms.Compose([
 
 # --- CONTROL FUNCTIONS ---
 def on_press(key):
-    """Toggle AI on/off with F10, quit with F12."""
     global running, ai_enabled
     if key == keyboard.Key.f12:
         running = False
         print("🛑 Quit key (F12) pressed.")
     elif key == keyboard.Key.f10:
         ai_enabled = not ai_enabled
-        if not ai_enabled:
-            release_all_inputs()
+        if not ai_enabled: release_all_inputs()
         status = "ENABLED" if ai_enabled else "DISABLED"
         print(f"🤖 AI control is now {status}")
 
 def apply_output(output):
-    """Interprets model output and converts it to keyboard/mouse actions."""
     global target_mouse_pos
+    probs = torch.sigmoid(output).detach().cpu().numpy()
     
-    # Use sigmoid to convert logits to probabilities
-    probs = torch.sigmoid(output).detach().cpu().numpy() #
+    key_probs = probs[:len(COMMON_KEYS)]
+    mouse_x, mouse_y = probs[len(COMMON_KEYS)], probs[len(COMMON_KEYS) + 1]
+    left_click_prob, right_click_prob = probs[len(COMMON_KEYS) + 2], probs[len(COMMON_KEYS) + 3]
     
-    key_probs = probs[:len(COMMON_KEYS)] #
-    mouse_x, mouse_y = probs[len(COMMON_KEYS)], probs[len(COMMON_KEYS) + 1] #
-    left_click_prob, right_click_prob = probs[len(COMMON_KEYS) + 2], probs[len(COMMON_KEYS) + 3] #
+    target_mouse_pos = (mouse_x * SCREEN_WIDTH, mouse_y * SCREEN_HEIGHT)
     
-    # Set target mouse position
-    target_mouse_pos = (mouse_x * SCREEN_WIDTH, mouse_y * SCREEN_HEIGHT) #
-    
-    # MODIFICATION: Determine which threshold to use
     key_thresh_to_use = action_threshold if action_threshold is not None else KEY_THRESHOLD
     click_thresh_to_use = action_threshold if action_threshold is not None else CLICK_THRESHOLD
     
-    # Press/release keys based on threshold
-    for i, key_str in enumerate(COMMON_KEYS): #
-        pynput_key = KEY_MAPPING.get(key_str) #
-        if not pynput_key: continue #
+    for i, key_str in enumerate(COMMON_KEYS):
+        if not (pynput_key := KEY_MAPPING.get(key_str)): continue
         
-        # MODIFICATION: Use the dynamically loaded threshold
-        is_pressed = key_probs[i] > key_thresh_to_use #
-        if is_pressed and key_str not in current_pressed_keys: #
-            keyboard_controller.press(pynput_key) #
-            current_pressed_keys.add(key_str) #
-        elif not is_pressed and key_str in current_pressed_keys: #
-            keyboard_controller.release(pynput_key) #
-            current_pressed_keys.remove(key_str) #
+        is_pressed = key_probs[i] > key_thresh_to_use
+        if is_pressed and key_str not in current_pressed_keys:
+            keyboard_controller.press(pynput_key)
+            current_pressed_keys.add(key_str)
+        elif not is_pressed and key_str in current_pressed_keys:
+            keyboard_controller.release(pynput_key)
+            current_pressed_keys.remove(key_str)
             
-    # Handle mouse clicks
-    # MODIFICATION: Use the dynamically loaded threshold
-    left_click = left_click_prob > click_thresh_to_use #
-    right_click = right_click_prob > click_thresh_to_use #
+    left_click = left_click_prob > click_thresh_to_use
+    right_click = right_click_prob > click_thresh_to_use
     
-    if left_click and Button.left not in current_mouse_buttons: #
-        mouse_controller.press(Button.left) #
-        current_mouse_buttons.add(Button.left) #
-    elif not left_click and Button.left in current_mouse_buttons: #
-        mouse_controller.release(Button.left) #
-        current_mouse_buttons.remove(Button.left) #
+    if left_click and Button.left not in current_mouse_buttons:
+        mouse_controller.press(Button.left)
+        current_mouse_buttons.add(Button.left)
+    elif not left_click and Button.left in current_mouse_buttons:
+        mouse_controller.release(Button.left)
+        current_mouse_buttons.remove(Button.left)
         
-    if right_click and Button.right not in current_mouse_buttons: #
-        mouse_controller.press(Button.right) #
-        current_mouse_buttons.add(Button.right) #
-    elif not right_click and Button.right in current_mouse_buttons: #
-        mouse_controller.release(Button.right) #
-        current_mouse_buttons.remove(Button.right) #
+    if right_click and Button.right not in current_mouse_buttons:
+        mouse_controller.press(Button.right)
+        current_mouse_buttons.add(Button.right)
+    elif not right_click and Button.right in current_mouse_buttons:
+        mouse_controller.release(Button.right)
+        current_mouse_buttons.remove(Button.right)
 
 def smooth_mouse_movement():
-    """Interpolates mouse position for smooth movement."""
     current_pos = mouse_controller.position
-    diff_x = target_mouse_pos[0] - current_pos[0]
-    diff_y = target_mouse_pos[1] - current_pos[1]
+    diff_x, diff_y = target_mouse_pos[0] - current_pos[0], target_mouse_pos[1] - current_pos[1]
     
     if abs(diff_x) > MOUSE_DEADZONE or abs(diff_y) > MOUSE_DEADZONE:
         new_x = int(current_pos[0] + diff_x * SMOOTH_FACTOR)
         new_y = int(current_pos[1] + diff_y * SMOOTH_FACTOR)
-        mouse_controller.position = (
-            max(0, min(SCREEN_WIDTH - 1, new_x)),
-            max(0, min(SCREEN_HEIGHT - 1, new_y))
-        )
+        mouse_controller.position = (max(0, min(SCREEN_WIDTH - 1, new_x)), max(0, min(SCREEN_HEIGHT - 1, new_y)))
 
 def capture_frame():
-    """Captures and transforms a single screen frame."""
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         img = cv2.cvtColor(np.array(sct.grab(monitor)), cv2.COLOR_BGRA2RGB)
         return transform(img)
 
 def release_all_inputs():
-    """Releases all currently pressed keys and mouse buttons."""
     for key_str in list(current_pressed_keys):
         if (pynput_key := KEY_MAPPING.get(key_str)):
             keyboard_controller.release(pynput_key)
@@ -226,7 +212,6 @@ if __name__ == "__main__":
     print("   Press [F12] to quit.")
     print("="*50 + "\n")
 
-    # Pre-fill the frame buffer
     for _ in range(SEQUENCE_LENGTH):
         frame_sequence.append(capture_frame())
         time.sleep(0.05)
@@ -240,22 +225,18 @@ if __name__ == "__main__":
                 current_time = time.time()
                 if current_time - last_inference_time >= frame_interval:
                     last_inference_time = current_time
-                    
                     frame_sequence.append(capture_frame())
                     
                     with torch.no_grad():
                         input_tensor = torch.stack(list(frame_sequence)).unsqueeze(0).to(device)
                         output = model(input_tensor)
-                        # Use the prediction from the very last time step
                         apply_output(output[:, -1, :].squeeze())
                 
                 smooth_mouse_movement()
             
-            # Sleep to prevent high CPU usage, even when AI is disabled
             time.sleep(0.001)
             
     finally:
         release_all_inputs()
         listener.stop()
         print("\n✅ Inference stopped cleanly.")
-

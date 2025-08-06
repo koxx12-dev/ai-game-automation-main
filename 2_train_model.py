@@ -1,5 +1,6 @@
 import os
 import re
+import math
 from pathlib import Path
 import numpy as np
 import cv2
@@ -7,13 +8,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
-from torchvision import transforms, utils as tv_utils
+from torchvision import transforms
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 from torch.utils.tensorboard import SummaryWriter
-import subprocess
-import socket
-import random
-import psutil
 import matplotlib.pyplot as plt
 import seaborn as sns
 from config import * # Import all settings
@@ -40,7 +37,7 @@ class EarlyStopping:
         if self.counter >= self.patience:
             self.early_stop = True
 
-# === DATASET WITH OVERSAMPLING ===
+# === DATASET ===
 class WoWSequenceDataset(Dataset):
     """Custom dataset for loading sequences of frames and actions."""
     def __init__(self, frame_dir, actions_file, sequence_length, transform=None):
@@ -50,21 +47,18 @@ class WoWSequenceDataset(Dataset):
         frame_paths = sorted([os.path.join(frame_dir, f) for f in os.listdir(frame_dir) if f.endswith(".jpg")])
         actions = np.load(actions_file).astype(np.float32)
 
-        # Ensure frames and actions align
         min_len = min(len(frame_paths), len(actions))
         self.frame_paths = frame_paths[:min_len]
         self.actions = actions[:min_len]
 
-        # Oversample sequences where an action (key press or mouse click) occurs
         self.indices = []
         num_keys = len(COMMON_KEYS)
         action_frames = 0
 
         for i in range(len(self.frame_paths) - self.sequence_length + 1):
-            # Check the last frame in the sequence for an action
             last_action = self.actions[i + self.sequence_length - 1]
             key_press = np.sum(last_action[:num_keys]) > 0
-            mouse_click = np.sum(last_action[num_keys+2:]) > 0 # Mouse buttons are after pos
+            mouse_click = np.sum(last_action[num_keys+2:]) > 0
 
             if key_press or mouse_click:
                 self.indices.extend([i] * OVERSAMPLE_ACTION_FRAMES_MULTIPLIER)
@@ -82,7 +76,6 @@ class WoWSequenceDataset(Dataset):
         start_index = self.indices[idx]
         end_index = start_index + self.sequence_length
 
-        # Load sequence of images
         imgs = []
         for i in range(start_index, end_index):
             img = cv2.imread(self.frame_paths[i])
@@ -94,12 +87,33 @@ class WoWSequenceDataset(Dataset):
         seq_actions = self.actions[start_index:end_index]
         return torch.stack(imgs), torch.tensor(seq_actions, dtype=torch.float32)
 
-# === MODEL DEFINITION ===
-class BehaviorCloningCNNRNN(nn.Module):
-    """CNN-LSTM model for behavior cloning."""
-    def __init__(self, output_dim):
+# === NEW: POSITIONAL ENCODING ===
+class PositionalEncoding(nn.Module):
+    """Injects some information about the relative or absolute position of the tokens in the sequence."""
+    def __init__(self, d_model, dropout=0.1, max_len=50):
         super().__init__()
-        # CNN for feature extraction from images
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+# === UPDATED MODEL: TRANSFORMER ===
+class BehaviorCloningTransformer(nn.Module):
+    """CNN-Transformer model for behavior cloning."""
+    def __init__(self, output_dim, d_model, nhead, nlayers, dropout):
+        super().__init__()
+        # 1. CNN Feature Extractor
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2), nn.BatchNorm2d(32), nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
@@ -107,61 +121,58 @@ class BehaviorCloningCNNRNN(nn.Module):
             nn.AdaptiveAvgPool2d((6, 6)),
             nn.Flatten()
         )
-
-        # Calculate CNN output size dynamically
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, IMG_HEIGHT, IMG_WIDTH)
             cnn_out_size = self.cnn(dummy_input).shape[1]
 
-        # LSTM for processing sequences of features
-        self.lstm = nn.LSTM(
-            input_size=cnn_out_size,
-            hidden_size=256,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.2
-        )
+        # 2. Projection layer to match transformer's d_model
+        self.input_proj = nn.Linear(cnn_out_size, d_model)
+        
+        # 3. Positional Encoding
+        self.pos_encoder = PositionalEncoding(d_model, dropout, max_len=SEQUENCE_LENGTH)
+        
+        # 4. Transformer Encoder
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dropout=dropout, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, nlayers)
+        
+        self.d_model = d_model
 
-        # Output heads for different actions
-        self.key_head = nn.Sequential(
-            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(0.2),
-            nn.Linear(128, len(COMMON_KEYS)) # No sigmoid, use BCEWithLogitsLoss
-        )
-        self.mouse_pos_head = nn.Sequential(
-            nn.Linear(256, 64), nn.ReLU(),
-            nn.Linear(64, 2), nn.Sigmoid() # Position is normalized (0-1)
-        )
-        self.mouse_click_head = nn.Sequential(
-            nn.Linear(256, 32), nn.ReLU(),
-            nn.Linear(32, 2) # No sigmoid, use BCEWithLogitsLoss
-        )
+        # 5. Output heads
+        self.key_head = nn.Sequential(nn.Linear(d_model, len(COMMON_KEYS)))
+        self.mouse_pos_head = nn.Sequential(nn.Linear(d_model, 2), nn.Sigmoid())
+        self.mouse_click_head = nn.Sequential(nn.Linear(d_model, 2))
 
     def forward(self, x):
         b, s, c, h, w = x.shape
         x_reshaped = x.view(b * s, c, h, w)
+        
+        # Pass through CNN
         feat = self.cnn(x_reshaped)
         feat_reshaped = feat.view(b, s, -1)
-        lstm_out, _ = self.lstm(feat_reshaped)
-        lstm_out_reshaped = lstm_out.reshape(b * s, -1)
         
-        key_out = self.key_head(lstm_out_reshaped)
-        pos_out = self.mouse_pos_head(lstm_out_reshaped)
-        click_out = self.mouse_click_head(lstm_out_reshaped)
+        # Project and add positional encoding
+        projected_feat = self.input_proj(feat_reshaped) * math.sqrt(self.d_model)
+        pos_encoded_feat = self.pos_encoder(projected_feat)
         
-        concat = torch.cat([key_out, pos_out, click_out], dim=1)
-        return concat.view(b, s, -1)
+        # Pass through Transformer
+        transformer_out = self.transformer_encoder(pos_encoded_feat)
+        
+        # Pass through output heads
+        key_out = self.key_head(transformer_out)
+        pos_out = self.mouse_pos_head(transformer_out)
+        click_out = self.mouse_click_head(transformer_out)
+        
+        # Concatenate for loss calculation
+        return torch.cat([key_out, pos_out, click_out], dim=2)
 
 # === LOSS FUNCTION ===
 def weighted_bce_mse_loss(outputs, targets):
-    """Calculates a combined loss for keys, clicks, and mouse position."""
     bce_loss = nn.BCEWithLogitsLoss()
     mse_loss = nn.MSELoss()
-
     num_keys = len(COMMON_KEYS)
     
     key_out, click_out = outputs[..., :num_keys], outputs[..., num_keys+2:]
     key_tgt, click_tgt = targets[..., :num_keys], targets[..., num_keys+2:]
-    
     pos_out = outputs[..., num_keys:num_keys+2]
     pos_tgt = targets[..., num_keys:num_keys+2]
     
@@ -169,11 +180,10 @@ def weighted_bce_mse_loss(outputs, targets):
     loss_clicks = bce_loss(click_out, click_tgt)
     loss_pos = mse_loss(pos_out, pos_tgt)
     
-    return loss_keys + loss_clicks + loss_pos
+    return loss_keys + loss_clicks + (loss_pos * 5) # Weight mouse position loss higher
 
-# === VALIDATION & TENSORBOARD UTILS ===
+# === VALIDATION ===
 def validate(model, dataloader, device, writer, epoch):
-    """Evaluates the model on the validation set."""
     model.eval()
     all_preds, all_tgts = [], []
 
@@ -181,7 +191,8 @@ def validate(model, dataloader, device, writer, epoch):
         for seqs, acts in dataloader:
             seqs, acts = seqs.to(device), acts.to(device)
             out = model(seqs)
-
+            
+            # Aggregate predictions and targets over a small window at the end of the sequence
             preds = torch.sigmoid(out[:, -VALIDATION_WINDOW:, :]).mean(dim=1)
             tgts = acts[:, -VALIDATION_WINDOW:, :].max(dim=1)[0]
 
@@ -192,20 +203,15 @@ def validate(model, dataloader, device, writer, epoch):
     all_tgts = np.vstack(all_tgts)
 
     num_keys = len(COMMON_KEYS)
-    key_preds = all_preds[:, :num_keys]
-    click_preds = all_preds[:, num_keys+2:]
-    key_tgts = all_tgts[:, :num_keys]
-    click_tgts = all_tgts[:, num_keys+2:]
+    key_preds, click_preds = all_preds[:, :num_keys], all_preds[:, num_keys+2:]
+    key_tgts, click_tgts = all_tgts[:, :num_keys], all_tgts[:, num_keys+2:]
 
     best_f1 = 0.0
     best_thresh = 0.5
     for thresh in THRESHOLD_SWEEP:
         binary_preds = (np.hstack([key_preds, click_preds]) > thresh).astype(int)
         binary_tgts = np.hstack([key_tgts, click_tgts])
-        
-        _, _, f1, _ = precision_recall_fscore_support(
-            binary_tgts, binary_preds, average="samples", zero_division=0
-        )
+        _, _, f1, _ = precision_recall_fscore_support(binary_tgts, binary_preds, average="samples", zero_division=0)
         if f1 > best_f1:
             best_f1 = f1
             best_thresh = thresh
@@ -217,8 +223,7 @@ def validate(model, dataloader, device, writer, epoch):
     cm = confusion_matrix(cm_tgts, cm_preds)
     
     fig, ax = plt.subplots(figsize=(8, 8))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
-                xticklabels=['No Action', 'Action'], yticklabels=['No Action', 'Action'])
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax, xticklabels=['No Action', 'Action'], yticklabels=['No Action', 'Action'])
     ax.set_title(f"Confusion Matrix (Thresh={best_thresh:.2f})")
     ax.set_ylabel("True Label")
     ax.set_xlabel("Predicted Label")
@@ -226,10 +231,6 @@ def validate(model, dataloader, device, writer, epoch):
     plt.close(fig)
 
     return best_f1, best_thresh
-
-def find_free_port(start=6006, end=6099):
-    # ... implementation is the same ...
-    return 6006
 
 # === MAIN TRAINING LOOP ===
 def train():
@@ -243,14 +244,7 @@ def train():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    datasets = []
-    for d in DATA_DIRS:
-        fdir = os.path.join(d, "frames")
-        afile = os.path.join(d, ACTIONS_FILE)
-        if os.path.exists(fdir) and os.path.exists(afile):
-            ds = WoWSequenceDataset(fdir, afile, SEQUENCE_LENGTH, transform)
-            if len(ds) > 0:
-                datasets.append(ds)
+    datasets = [ds for d in DATA_DIRS if (fdir := os.path.join(d, "frames")) and (afile := os.path.join(d, ACTIONS_FILE)) and os.path.exists(fdir) and os.path.exists(afile) and len(ds := WoWSequenceDataset(fdir, afile, SEQUENCE_LENGTH, transform)) > 0]
     if not datasets:
         print("❌ No valid datasets found! Check DATA_DIRS in config.py.")
         return
@@ -261,47 +255,35 @@ def train():
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
     print(f"\nTotal sequences: {len(full_dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
 
-    num_workers_to_use = 4
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=num_workers_to_use, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers_to_use, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dim = len(COMMON_KEYS) + 4
-    model = BehaviorCloningCNNRNN(output_dim).to(device)
+    
+    # Initialize the new Transformer model
+    model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=2)
 
-    # UPGRADE: Logic to find and load the latest checkpoint
     start_epoch = 1
     best_f1 = 0.0
-    if os.path.exists(MODEL_SAVE_DIR):
-        checkpoint_files = list(Path(MODEL_SAVE_DIR).glob("model_epoch_*.pth"))
-        if checkpoint_files:
-            latest_checkpoint_path = max(checkpoint_files, key=os.path.getctime)
-            
-            # Extract epoch number from filename to be safe
-            match = re.search(r"model_epoch_(\d+).pth", latest_checkpoint_path.name)
-            if match:
-                try:
-                    checkpoint = torch.load(latest_checkpoint_path, map_location=device)
-                    model.load_state_dict(checkpoint['model_state_dict'])
-                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                    start_epoch = checkpoint['epoch'] + 1
-                    best_f1 = checkpoint.get('best_f1', 0.0) # Use .get for backward compatibility
-                    
-                    print(f"\n✅ Resuming training from checkpoint: {latest_checkpoint_path}")
-                    print(f"   Starting at epoch {start_epoch}. Best F1 so far: {best_f1:.4f}\n")
-
-                except Exception as e:
-                    print(f"\n⚠️ Could not load checkpoint {latest_checkpoint_path}. Starting from scratch. Error: {e}\n")
-            else:
-                print(f"\n⚠️ Found a file, but could not parse epoch number: {latest_checkpoint_path}. Starting from scratch.\n")
-
+    if os.path.exists(MODEL_SAVE_DIR) and (checkpoint_files := list(Path(MODEL_SAVE_DIR).glob("model_epoch_*.pth"))):
+        latest_checkpoint_path = max(checkpoint_files, key=os.path.getctime)
+        if match := re.search(r"model_epoch_(\d+).pth", latest_checkpoint_path.name):
+            try:
+                checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+                model.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                start_epoch = checkpoint['epoch'] + 1
+                best_f1 = checkpoint.get('best_f1', 0.0)
+                print(f"\n✅ Resuming training from {latest_checkpoint_path} at epoch {start_epoch}. Best F1: {best_f1:.4f}\n")
+            except Exception as e:
+                print(f"\n⚠️ Could not load checkpoint {latest_checkpoint_path}. Starting fresh. Error: {e}\n")
 
     print(f"\n🚀 Starting training on {device} for {EPOCHS} epochs…\n")
 
     try:
-        # MODIFICATION: Use start_epoch in the range
         for epoch in range(start_epoch, EPOCHS + 1):
             model.train()
             running_loss = 0.0
@@ -335,32 +317,27 @@ def train():
                 print(f"🛑 Early stopping triggered at epoch {epoch}.")
                 break
 
-            # UPGRADE: Save optimizer state and epoch number in the checkpoint
             ckpt_path = MODEL_SAVE_PATH_TEMPLATE.format(epoch)
-            checkpoint = {
+            torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_f1': best_f1,
-            }
-            torch.save(checkpoint, ckpt_path)
+            }, ckpt_path)
 
             if val_f1 > best_f1:
                 best_f1 = val_f1
-                # UPGRADE: Save the comprehensive checkpoint as the best model too
-                best_model_checkpoint = {
+                torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_f1': best_f1,
-                }
-                torch.save(best_model_checkpoint, MODEL_FILE)
+                }, MODEL_FILE)
                 print(f"⭐ New best model saved to {MODEL_FILE} (F1={best_f1:.4f})")
 
-                best_threshold_path = os.path.join(os.path.dirname(MODEL_FILE), "best_threshold.txt") if os.path.dirname(MODEL_FILE) else "best_threshold.txt"
+                best_threshold_path = os.path.join(os.path.dirname(MODEL_FILE) or ".", "best_threshold.txt")
                 try:
-                    with open(best_threshold_path, "w") as f:
-                        f.write(str(best_thresh))
+                    with open(best_threshold_path, "w") as f: f.write(str(best_thresh))
                     print(f"   Saved best threshold ({best_thresh:.2f}) to {best_threshold_path}")
                 except Exception as e:
                     print(f"   Could not save best threshold: {e}")

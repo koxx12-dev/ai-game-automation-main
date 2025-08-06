@@ -1,16 +1,45 @@
-# It's recommended to install torch and torchvision together, matching your CUDA version.
-# Visit https://pytorch.org/get-started/locally/ for the most up-to-date command.
-# Example for CUDA 12.9
-# pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
+# -- Create VENV --
+# python -m venv venv
+# venv\Scripts\activate.bat
+# pip install -r requirements.txt
 
+# -- Uninstall all packages --
+# pip freeze > installed.txt
+# pip uninstall -y -r installed.txt
+# del installed.txt
+
+# -- Core Requirements --
+
+# Core Deep Learning Framework (PyTorch with CUDA 12.1 support)
+--extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.3.1
 torchvision==0.18.1
-numpy==1.26.4
-opencv-python==4.9.0.80
+
+# Computer Vision and Screen Capture
+opencv-python-headless==4.9.0.80
 mss==9.0.1
+
+# User Input Simulation and Monitoring
 pynput==1.7.6
+
+# Data Handling and Scientific Computing
+numpy==1.26.4
+
+# Model Evaluation and Visualization
 scikit-learn==1.5.0
-tensorboard==2.17.0
 matplotlib==3.9.0
 seaborn==0.13.2
-psutil==5.9.8
+
+# TensorBoard Logging
+tensorboard==2.16.2
+
+# -- Optional Optimization & Tooling Packages --
+
+# Faster image processing library (drop-in replacement for Pillow) - not supported by python 3.12 yet
+#Pillow-SIMD==9.5.0.post2
+
+# Hardware-specific acceleration for Intel CPUs & GPUs
+# intel-extension-for-pytorch==2.3.100+cpu
+
+# For monitoring NVIDIA GPU stats programmatically
+# nvidia-ml-py==12.5.0

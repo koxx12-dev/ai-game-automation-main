@@ -1,4 +1,6 @@
 import os
+import re
+from pathlib import Path
 import numpy as np
 import cv2
 import torch
@@ -14,7 +16,6 @@ import random
 import psutil
 import matplotlib.pyplot as plt
 import seaborn as sns
-from pathlib import Path
 from config import * # Import all settings
 
 # === EARLY STOPPING ===
@@ -109,7 +110,6 @@ class BehaviorCloningCNNRNN(nn.Module):
 
         # Calculate CNN output size dynamically
         with torch.no_grad():
-            # FIX: Use the correct image dimensions for the dummy input
             dummy_input = torch.zeros(1, 3, IMG_HEIGHT, IMG_WIDTH)
             cnn_out_size = self.cnn(dummy_input).shape[1]
 
@@ -138,24 +138,16 @@ class BehaviorCloningCNNRNN(nn.Module):
 
     def forward(self, x):
         b, s, c, h, w = x.shape
-        # Pass each frame in the sequence through the CNN
         x_reshaped = x.view(b * s, c, h, w)
         feat = self.cnn(x_reshaped)
-        
-        # Reshape for LSTM: (batch, seq_len, features)
         feat_reshaped = feat.view(b, s, -1)
-        
-        # Pass sequence through LSTM
         lstm_out, _ = self.lstm(feat_reshaped)
-        
-        # Apply heads to each time step's output
         lstm_out_reshaped = lstm_out.reshape(b * s, -1)
         
         key_out = self.key_head(lstm_out_reshaped)
         pos_out = self.mouse_pos_head(lstm_out_reshaped)
         click_out = self.mouse_click_head(lstm_out_reshaped)
         
-        # Combine outputs and reshape back to sequence
         concat = torch.cat([key_out, pos_out, click_out], dim=1)
         return concat.view(b, s, -1)
 
@@ -167,11 +159,9 @@ def weighted_bce_mse_loss(outputs, targets):
 
     num_keys = len(COMMON_KEYS)
     
-    # Key and click predictions (use BCEWithLogitsLoss)
     key_out, click_out = outputs[..., :num_keys], outputs[..., num_keys+2:]
     key_tgt, click_tgt = targets[..., :num_keys], targets[..., num_keys+2:]
     
-    # Mouse position predictions (use MSELoss)
     pos_out = outputs[..., num_keys:num_keys+2]
     pos_tgt = targets[..., num_keys:num_keys+2]
     
@@ -192,8 +182,6 @@ def validate(model, dataloader, device, writer, epoch):
             seqs, acts = seqs.to(device), acts.to(device)
             out = model(seqs)
 
-            # Aggregate predictions and targets over the validation window
-            # Use sigmoid to convert logits to probabilities for metric calculation
             preds = torch.sigmoid(out[:, -VALIDATION_WINDOW:, :]).mean(dim=1)
             tgts = acts[:, -VALIDATION_WINDOW:, :].max(dim=1)[0]
 
@@ -203,14 +191,12 @@ def validate(model, dataloader, device, writer, epoch):
     all_preds = np.vstack(all_preds)
     all_tgts = np.vstack(all_tgts)
 
-    # Separate keys and clicks for F1 score calculation
     num_keys = len(COMMON_KEYS)
     key_preds = all_preds[:, :num_keys]
     click_preds = all_preds[:, num_keys+2:]
     key_tgts = all_tgts[:, :num_keys]
     click_tgts = all_tgts[:, num_keys+2:]
 
-    # Find best threshold for F1 score
     best_f1 = 0.0
     best_thresh = 0.5
     for thresh in THRESHOLD_SWEEP:
@@ -226,7 +212,6 @@ def validate(model, dataloader, device, writer, epoch):
 
     print(f"\nValidation Best F1: {best_f1:.4f} at threshold {best_thresh:.2f}")
 
-    # Log confusion matrix with the best threshold
     cm_preds = (np.hstack([key_preds, click_preds]) > best_thresh).astype(int).flatten()
     cm_tgts = np.hstack([key_tgts, click_tgts]).flatten()
     cm = confusion_matrix(cm_tgts, cm_preds)
@@ -243,24 +228,21 @@ def validate(model, dataloader, device, writer, epoch):
     return best_f1, best_thresh
 
 def find_free_port(start=6006, end=6099):
-    """Finds an available port for TensorBoard."""
-    # ... (implementation is the same)
-    return 6006 # Placeholder
+    # ... implementation is the same ...
+    return 6006
 
 # === MAIN TRAINING LOOP ===
 def train():
     writer = SummaryWriter(log_dir=TENSORBOARD_LOG_DIR)
     early_stopper = EarlyStopping()
     
-    # FIX: Define image transformations using the correct, unified dimensions from config
     transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.Resize((IMG_HEIGHT, IMG_WIDTH)), # This now uses the correct 224x224
+        transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    # Load all specified datasets
     datasets = []
     for d in DATA_DIRS:
         fdir = os.path.join(d, "frames")
@@ -279,21 +261,48 @@ def train():
     train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
     print(f"\nTotal sequences: {len(full_dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
 
-    num_workers_to_use = 4 
+    num_workers_to_use = 4
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=num_workers_to_use, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers_to_use, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output_dim = len(COMMON_KEYS) + 4 # keys + mouse (x, y, l_click, r_click)
+    output_dim = len(COMMON_KEYS) + 4
     model = BehaviorCloningCNNRNN(output_dim).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=2)
 
+    # UPGRADE: Logic to find and load the latest checkpoint
+    start_epoch = 1
     best_f1 = 0.0
+    if os.path.exists(MODEL_SAVE_DIR):
+        checkpoint_files = list(Path(MODEL_SAVE_DIR).glob("model_epoch_*.pth"))
+        if checkpoint_files:
+            latest_checkpoint_path = max(checkpoint_files, key=os.path.getctime)
+            
+            # Extract epoch number from filename to be safe
+            match = re.search(r"model_epoch_(\d+).pth", latest_checkpoint_path.name)
+            if match:
+                try:
+                    checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    start_epoch = checkpoint['epoch'] + 1
+                    best_f1 = checkpoint.get('best_f1', 0.0) # Use .get for backward compatibility
+                    
+                    print(f"\n✅ Resuming training from checkpoint: {latest_checkpoint_path}")
+                    print(f"   Starting at epoch {start_epoch}. Best F1 so far: {best_f1:.4f}\n")
+
+                except Exception as e:
+                    print(f"\n⚠️ Could not load checkpoint {latest_checkpoint_path}. Starting from scratch. Error: {e}\n")
+            else:
+                print(f"\n⚠️ Found a file, but could not parse epoch number: {latest_checkpoint_path}. Starting from scratch.\n")
+
+
     print(f"\n🚀 Starting training on {device} for {EPOCHS} epochs…\n")
 
     try:
-        for epoch in range(1, EPOCHS + 1):
+        # MODIFICATION: Use start_epoch in the range
+        for epoch in range(start_epoch, EPOCHS + 1):
             model.train()
             running_loss = 0.0
             for i, (seqs, acts) in enumerate(train_loader, 1):
@@ -316,30 +325,38 @@ def train():
             writer.add_scalar("Loss/train_epoch", avg_loss, epoch)
             print(f"Epoch {epoch} Summary | Avg Loss: {avg_loss:.4f}")
 
-            # Validation
-            # MODIFICATION: Receive both F1 score and the best threshold
-            val_f1, best_thresh = validate(model, val_loader, device, writer, epoch) #
-            writer.add_scalar("F1/validation", val_f1, epoch) #
-            writer.add_scalar("LearningRate", optimizer.param_groups[0]['lr'], epoch) #
-            scheduler.step(val_f1) #
+            val_f1, best_thresh = validate(model, val_loader, device, writer, epoch)
+            writer.add_scalar("F1/validation", val_f1, epoch)
+            writer.add_scalar("LearningRate", optimizer.param_groups[0]['lr'], epoch)
+            scheduler.step(val_f1)
 
-            # Early stopping check
-            early_stopper(val_f1) #
-            if early_stopper.early_stop: #
-                print(f"🛑 Early stopping triggered at epoch {epoch}.") #
+            early_stopper(val_f1)
+            if early_stopper.early_stop:
+                print(f"🛑 Early stopping triggered at epoch {epoch}.")
                 break
 
-            # Save checkpoint
-            ckpt_path = MODEL_SAVE_PATH_TEMPLATE.format(epoch) #
-            torch.save(model.state_dict(), ckpt_path) #
+            # UPGRADE: Save optimizer state and epoch number in the checkpoint
+            ckpt_path = MODEL_SAVE_PATH_TEMPLATE.format(epoch)
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_f1': best_f1,
+            }
+            torch.save(checkpoint, ckpt_path)
 
-            # Save best model
-            if val_f1 > best_f1: #
-                best_f1 = val_f1 #
-                torch.save(model.state_dict(), MODEL_FILE) #
-                print(f"⭐ New best model saved to {MODEL_FILE} (F1={best_f1:.4f})") #
+            if val_f1 > best_f1:
+                best_f1 = val_f1
+                # UPGRADE: Save the comprehensive checkpoint as the best model too
+                best_model_checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'best_f1': best_f1,
+                }
+                torch.save(best_model_checkpoint, MODEL_FILE)
+                print(f"⭐ New best model saved to {MODEL_FILE} (F1={best_f1:.4f})")
 
-                # Save the best threshold to a file alongside the model
                 best_threshold_path = os.path.join(os.path.dirname(MODEL_FILE), "best_threshold.txt") if os.path.dirname(MODEL_FILE) else "best_threshold.txt"
                 try:
                     with open(best_threshold_path, "w") as f:
@@ -348,12 +365,11 @@ def train():
                 except Exception as e:
                     print(f"   Could not save best threshold: {e}")
 
-    except KeyboardInterrupt: #
-        print("\n⏹ Training interrupted by user. Saving final state...") #
+    except KeyboardInterrupt:
+        print("\n⏹ Training interrupted by user. Saving final state...")
     finally:
-        writer.close() #
-        print("\n✅ Training complete. TensorBoard logs saved.") #
+        writer.close()
+        print("\n✅ Training complete. TensorBoard logs saved.")
 
 if __name__ == "__main__":
     train()
-

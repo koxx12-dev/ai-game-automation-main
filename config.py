@@ -15,22 +15,22 @@ MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 # === IMAGE & SEQUENCE SETTINGS ===
 # Unified image dimensions for recording, training, and inference.
 # The model's CNN is sensitive to this, so keep it consistent.
-# Change to 360x240 to increase speed of model training significantly
-IMG_WIDTH = 720
-IMG_HEIGHT = 480
+# Change to 360 x 240 to increase speed of model training significantly - original 720 x 480
+IMG_WIDTH = 369
+IMG_HEIGHT = 240
 SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
 
 # === RECORDING & INFERENCE FPS ===
-RECORDING_FPS = 30
-INFERENCE_FPS = 30
+RECORDING_FPS = 20
+INFERENCE_FPS = 20
 
 # === TRAINING PARAMETERS ===
 BATCH_SIZE = 8  # Adjusted for potentially larger model
-EPOCHS = 10
+EPOCHS = 2
 LEARNING_RATE = 1e-4
 
 # === DATASET BALANCING & VALIDATION ===
-OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 25
+OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 15
 VALIDATION_SPLIT = 0.15
 VALIDATION_WINDOW = 3  # Timesteps to aggregate for validation metrics
 THRESHOLD_SWEEP = [0.3, 0.4, 0.5, 0.6, 0.7] # For finding best validation threshold
@@ -70,7 +70,7 @@ COMMON_KEYS = [
     "w","a","s","d",                        # Movement
     "space","shift","ctrl",                 # Actions
     "1","2","3","4","5",                    # Hotkeys
-    "q","e","r","f","tab","enter","escape", # Other
+    "q","e","r","v","tab",                  # Other
 ]
 
 # This dictionary maps the string representation to pynput key objects for inference.

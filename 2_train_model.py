@@ -179,7 +179,8 @@ def weighted_bce_mse_loss(outputs, targets):
     loss_clicks = bce_loss(click_out, click_tgt)
     loss_pos = mse_loss(pos_out, pos_tgt)
     
-    return loss_keys + loss_clicks + (loss_pos * 2) # Weight mouse position loss higher
+    # ✅ FIXED: Removed the multiplier for a more balanced loss
+    return loss_keys + loss_clicks + loss_pos
 
 # === VALIDATION ===
 def validate(model, dataloader, device, writer, epoch):
@@ -191,18 +192,22 @@ def validate(model, dataloader, device, writer, epoch):
             seqs, acts = seqs.to(device), acts.to(device)
             out = model(seqs)
             
-            # Aggregate predictions and targets over a small window at the end of the sequence
-            preds = torch.sigmoid(out[:, -VALIDATION_WINDOW:, :]).mean(dim=1)
-            tgts = acts[:, -VALIDATION_WINDOW:, :].max(dim=1)[0]
+            preds_keys_clicks = torch.sigmoid(torch.cat([out[..., :len(COMMON_KEYS)], out[..., len(COMMON_KEYS)+2:]], dim=-1))
+            preds_pos = out[..., len(COMMON_KEYS):len(COMMON_KEYS)+2]
+            preds = torch.cat([preds_keys_clicks, preds_pos], dim=-1)
+            
+            preds_agg = preds[:, -VALIDATION_WINDOW:, :].mean(dim=1)
+            tgts_agg = acts[:, -VALIDATION_WINDOW:, :].max(dim=1)[0]
 
-            all_preds.append(preds.cpu().numpy())
-            all_tgts.append(tgts.cpu().numpy())
+            all_preds.append(preds_agg.cpu().numpy())
+            all_tgts.append(tgts_agg.cpu().numpy())
 
     all_preds = np.vstack(all_preds)
     all_tgts = np.vstack(all_tgts)
 
     num_keys = len(COMMON_KEYS)
-    key_preds, click_preds = all_preds[:, :num_keys], all_preds[:, num_keys+2:]
+    # Note: Prediction slicing is different now due to concatenation order
+    key_preds, click_preds = all_preds[:, :num_keys], all_preds[:, num_keys:num_keys+2]
     key_tgts, click_tgts = all_tgts[:, :num_keys], all_tgts[:, num_keys+2:]
 
     best_f1 = 0.0
@@ -260,7 +265,6 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dim = len(COMMON_KEYS) + 4
     
-    # Initialize the new Transformer model
     model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=2)

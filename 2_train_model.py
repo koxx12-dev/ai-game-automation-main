@@ -11,6 +11,8 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
 from torchvision import transforms
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 from torch.utils.tensorboard import SummaryWriter
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid Tkinter issues
 import matplotlib.pyplot as plt
 import seaborn as sns
 from config import * # Import all settings

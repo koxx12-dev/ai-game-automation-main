@@ -1,6 +1,9 @@
 import os
 import re
 import math
+import subprocess
+import threading
+import time
 from pathlib import Path
 import numpy as np
 import cv2
@@ -138,10 +141,41 @@ class BehaviorCloningTransformer(nn.Module):
         
         self.d_model = d_model
 
-        # 5. Output heads
-        self.key_head = nn.Sequential(nn.Linear(d_model, len(COMMON_KEYS)))
-        self.mouse_pos_head = nn.Sequential(nn.Linear(d_model, 2), nn.Sigmoid())
-        self.mouse_click_head = nn.Sequential(nn.Linear(d_model, 2))
+        # 5. Enhanced Output heads with better architecture
+        # Separate heads for different action types with different complexities
+        self.key_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, len(COMMON_KEYS))
+        )
+        
+        self.mouse_pos_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 2),
+            nn.Sigmoid()
+        )
+        
+        # Enhanced click head with more capacity for rare events
+        self.mouse_click_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 2)
+        )
+        
+        # Mouse wheel head for scroll up/down
+        self.mouse_wheel_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 2)
+        )
 
     def forward(self, x):
         b, s, c, h, w = x.shape
@@ -162,27 +196,70 @@ class BehaviorCloningTransformer(nn.Module):
         key_out = self.key_head(transformer_out)
         pos_out = self.mouse_pos_head(transformer_out)
         click_out = self.mouse_click_head(transformer_out)
+        wheel_out = self.mouse_wheel_head(transformer_out)
         
         # Concatenate for loss calculation
-        return torch.cat([key_out, pos_out, click_out], dim=2)
+        return torch.cat([key_out, pos_out, click_out, wheel_out], dim=2)
 
-# === LOSS FUNCTION ===
-def weighted_bce_mse_loss(outputs, targets):
-    bce_loss = nn.BCEWithLogitsLoss()
-    mse_loss = nn.MSELoss()
+# === IMPROVED LOSS FUNCTION WITH CLASS WEIGHTS ===
+class FocalLoss(nn.Module):
+    """Focal Loss to handle class imbalance."""
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(inputs, targets)
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
+    """Enhanced loss function with focal loss for imbalanced classes."""
     num_keys = len(COMMON_KEYS)
     
-    key_out, click_out = outputs[..., :num_keys], outputs[..., num_keys+2:]
-    key_tgt, click_tgt = targets[..., :num_keys], targets[..., num_keys+2:]
+    # Updated slicing for new action vector: [keys, mouse_pos, clicks, wheel]
+    key_out = outputs[..., :num_keys]
     pos_out = outputs[..., num_keys:num_keys+2]
-    pos_tgt = targets[..., num_keys:num_keys+2]
+    click_out = outputs[..., num_keys+2:num_keys+4]  # Left/right clicks
+    wheel_out = outputs[..., num_keys+4:num_keys+6]  # Wheel up/down
     
-    loss_keys = bce_loss(key_out, key_tgt)
-    loss_clicks = bce_loss(click_out, click_tgt)
+    key_tgt = targets[..., :num_keys]
+    pos_tgt = targets[..., num_keys:num_keys+2]
+    click_tgt = targets[..., num_keys+2:num_keys+4]
+    wheel_tgt = targets[..., num_keys+4:num_keys+6]
+    
+    # Use focal loss for keys, clicks, and wheel to handle class imbalance
+    focal_loss = FocalLoss(alpha=1, gamma=2)
+    loss_keys = focal_loss(key_out, key_tgt)
+    loss_clicks = focal_loss(click_out, click_tgt)
+    loss_wheel = focal_loss(wheel_out, wheel_tgt)
+    
+    # Use MSE for mouse position (regression)
+    mse_loss = nn.MSELoss()
     loss_pos = mse_loss(pos_out, pos_tgt)
     
-    # ✅ FIXED: Removed the multiplier for a more balanced loss
-    return loss_keys + loss_clicks + loss_pos
+    # Weight the losses based on importance and class balance
+    # Give more weight to clicks and wheel since they're rare
+    total_loss = loss_keys + 3.0 * loss_clicks + 2.0 * loss_wheel + 0.5 * loss_pos
+    
+    # Log individual losses if writer is provided
+    if writer and step is not None:
+        writer.add_scalar("Loss/keys", loss_keys.item(), step)
+        writer.add_scalar("Loss/clicks", loss_clicks.item(), step)
+        writer.add_scalar("Loss/wheel", loss_wheel.item(), step)
+        writer.add_scalar("Loss/position", loss_pos.item(), step)
+        writer.add_scalar("Loss/total", total_loss.item(), step)
+    
+    return total_loss
 
 # === VALIDATION ===
 def validate(model, dataloader, device, writer, epoch):
@@ -208,15 +285,22 @@ def validate(model, dataloader, device, writer, epoch):
     all_tgts = np.vstack(all_tgts)
 
     num_keys = len(COMMON_KEYS)
-    # Note: Prediction slicing is different now due to concatenation order
-    key_preds, click_preds = all_preds[:, :num_keys], all_preds[:, num_keys:num_keys+2]
-    key_tgts, click_tgts = all_tgts[:, :num_keys], all_tgts[:, num_keys+2:]
+    # Updated slicing for new action vector: [keys, mouse_pos, clicks, wheel]
+    key_preds = all_preds[:, :num_keys]
+    pos_preds = all_preds[:, num_keys:num_keys+2]
+    click_preds = all_preds[:, num_keys+2:num_keys+4]
+    wheel_preds = all_preds[:, num_keys+4:num_keys+6]
+    
+    key_tgts = all_tgts[:, :num_keys]
+    pos_tgts = all_tgts[:, num_keys:num_keys+2]
+    click_tgts = all_tgts[:, num_keys+2:num_keys+4]
+    wheel_tgts = all_tgts[:, num_keys+4:num_keys+6]
 
     best_f1 = 0.0
     best_thresh = 0.5
     for thresh in THRESHOLD_SWEEP:
-        binary_preds = (np.hstack([key_preds, click_preds]) > thresh).astype(int)
-        binary_tgts = np.hstack([key_tgts, click_tgts])
+        binary_preds = (np.hstack([key_preds, click_preds, wheel_preds]) > thresh).astype(int)
+        binary_tgts = np.hstack([key_tgts, click_tgts, wheel_tgts])
         _, _, f1, _ = precision_recall_fscore_support(binary_tgts, binary_preds, average="samples", zero_division=0)
         if f1 > best_f1:
             best_f1 = f1
@@ -224,22 +308,108 @@ def validate(model, dataloader, device, writer, epoch):
 
     print(f"\nValidation Best F1: {best_f1:.4f} at threshold {best_thresh:.2f}")
 
-    cm_preds = (np.hstack([key_preds, click_preds]) > best_thresh).astype(int).flatten()
-    cm_tgts = np.hstack([key_tgts, click_tgts]).flatten()
+    # Enhanced logging for TensorBoard
+    writer.add_scalar("Validation/Best_F1", best_f1, epoch)
+    writer.add_scalar("Validation/Best_Threshold", best_thresh, epoch)
+    
+    # Log prediction statistics
+    writer.add_scalar("Validation/Key_Pred_Mean", key_preds.mean(), epoch)
+    writer.add_scalar("Validation/Key_Pred_Std", key_preds.std(), epoch)
+    writer.add_scalar("Validation/Click_Pred_Mean", click_preds.mean(), epoch)
+    writer.add_scalar("Validation/Click_Pred_Std", click_preds.std(), epoch)
+    
+    # Log action counts
+    key_action_count = np.sum(np.any(key_tgts > 0, axis=1))
+    click_action_count = np.sum(np.any(click_tgts > 0, axis=1))
+    wheel_action_count = np.sum(np.any(wheel_tgts > 0, axis=1))
+    writer.add_scalar("Validation/Key_Action_Count", key_action_count, epoch)
+    writer.add_scalar("Validation/Click_Action_Count", click_action_count, epoch)
+    writer.add_scalar("Validation/Wheel_Action_Count", wheel_action_count, epoch)
+    
+    # Create confusion matrix
+    cm_preds = (np.hstack([key_preds, click_preds, wheel_preds]) > best_thresh).astype(int).flatten()
+    cm_tgts = np.hstack([key_tgts, click_tgts, wheel_tgts]).flatten()
     cm = confusion_matrix(cm_tgts, cm_preds)
     
     fig, ax = plt.subplots(figsize=(8, 8))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax, xticklabels=['No Action', 'Action'], yticklabels=['No Action', 'Action'])
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax, 
+                xticklabels=['No Action', 'Action'], 
+                yticklabels=['No Action', 'Action'])
     ax.set_title(f"Confusion Matrix (Thresh={best_thresh:.2f})")
     ax.set_ylabel("True Label")
     ax.set_xlabel("Predicted Label")
     writer.add_figure("Validation/ConfusionMatrix", fig, epoch)
     plt.close(fig)
+    
+    # Plot prediction distributions
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+    
+    ax1.hist(key_preds.flatten(), bins=50, alpha=0.7, label='Key predictions')
+    ax1.axvline(x=best_thresh, color='red', linestyle='--', label=f'Threshold {best_thresh:.2f}')
+    ax1.set_xlabel('Prediction Probability')
+    ax1.set_ylabel('Count')
+    ax1.set_title('Key Prediction Distribution')
+    ax1.legend()
+    
+    ax2.hist(click_preds.flatten(), bins=50, alpha=0.7, label='Click predictions')
+    ax2.axvline(x=best_thresh, color='red', linestyle='--', label=f'Threshold {best_thresh:.2f}')
+    ax2.set_xlabel('Prediction Probability')
+    ax2.set_ylabel('Count')
+    ax2.set_title('Click Prediction Distribution')
+    ax2.legend()
+    
+    ax3.hist(wheel_preds.flatten(), bins=50, alpha=0.7, label='Wheel predictions')
+    ax3.axvline(x=best_thresh, color='red', linestyle='--', label=f'Threshold {best_thresh:.2f}')
+    ax3.set_xlabel('Prediction Probability')
+    ax3.set_ylabel('Count')
+    ax3.set_title('Wheel Prediction Distribution')
+    ax3.legend()
+    
+    ax4.hist(pos_preds.flatten(), bins=50, alpha=0.7, label='Position predictions')
+    ax4.set_xlabel('Prediction Value')
+    ax4.set_ylabel('Count')
+    ax4.set_title('Mouse Position Distribution')
+    ax4.legend()
+    
+    writer.add_figure("Validation/Prediction_Distributions", fig, epoch)
+    plt.close(fig)
 
     return best_f1, best_thresh
 
+# === TENSORBOARD STARTUP ===
+def start_tensorboard():
+    """Start TensorBoard in a separate thread."""
+    try:
+        # Create the log directory if it doesn't exist
+        os.makedirs(TENSORBOARD_LOG_DIR, exist_ok=True)
+        
+        # Start TensorBoard process
+        cmd = ["tensorboard", "--logdir", TENSORBOARD_LOG_DIR, "--port", "6006", "--host", "0.0.0.0"]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Wait a moment for TensorBoard to start
+        time.sleep(3)
+        
+        if process.poll() is None:
+            print(f"✅ TensorBoard started successfully!")
+            print(f"   Open your browser and go to: http://localhost:6006")
+            print(f"   Log directory: {TENSORBOARD_LOG_DIR}")
+            return process
+        else:
+            print("❌ Failed to start TensorBoard")
+            return None
+    except Exception as e:
+        print(f"❌ Error starting TensorBoard: {e}")
+        return None
+
 # === MAIN TRAINING LOOP ===
-def train():
+def train(start_tensorboard_auto=True):
+    # Start TensorBoard if requested
+    tb_process = None
+    if start_tensorboard_auto:
+        print("🚀 Starting TensorBoard...")
+        tb_process = start_tensorboard()
+    
     writer = SummaryWriter(log_dir=TENSORBOARD_LOG_DIR)
     early_stopper = EarlyStopping()
     
@@ -297,16 +467,34 @@ def train():
                 
                 optimizer.zero_grad()
                 outputs = model(seqs)
-                loss = weighted_bce_mse_loss(outputs, acts)
+                
+                # Calculate step for logging
+                step = (epoch - 1) * len(train_loader) + i
+                loss = weighted_bce_mse_loss(outputs, acts, writer, step)
+                
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 
                 running_loss += loss.item()
+                
+                # Enhanced logging every 100 steps
                 if i % 100 == 0:
-                    step = (epoch - 1) * len(train_loader) + i
-                    writer.add_scalar("Loss/train_batch", loss.item(), step)
-                    print(f"  Epoch {epoch}/{EPOCHS} | Step {i}/{len(train_loader)} | Loss: {loss.item():.4f}")
+                    # Log learning rate
+                    writer.add_scalar("Training/Learning_Rate", 
+                                    optimizer.param_groups[0]['lr'], step)
+                    
+                    # Log gradient norms
+                    total_norm = 0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                    total_norm = total_norm ** (1. / 2)
+                    writer.add_scalar("Training/Gradient_Norm", total_norm, step)
+                    
+                    print(f"  Epoch {epoch}/{EPOCHS} | Step {i}/{len(train_loader)} | "
+                          f"Loss: {loss.item():.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
 
             avg_loss = running_loss / len(train_loader)
             writer.add_scalar("Loss/train_epoch", avg_loss, epoch)
@@ -352,6 +540,24 @@ def train():
     finally:
         writer.close()
         print("\n✅ Training complete. TensorBoard logs saved.")
+        
+        # Clean up TensorBoard process if it was started
+        if tb_process and tb_process.poll() is None:
+            print("🛑 Stopping TensorBoard...")
+            tb_process.terminate()
+            try:
+                tb_process.wait(timeout=5)
+                print("✅ TensorBoard stopped successfully.")
+            except subprocess.TimeoutExpired:
+                print("⚠️ Force killing TensorBoard...")
+                tb_process.kill()
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Train behavior cloning model')
+    parser.add_argument('--no-tensorboard', action='store_true', 
+                       help='Disable automatic TensorBoard startup')
+    args = parser.parse_args()
+    
+    train(start_tensorboard_auto=not args.no_tensorboard)

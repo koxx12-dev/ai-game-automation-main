@@ -1,1 +1,168 @@
-import cv2import mssimport numpy as npimport osimport timeimport reimport signalimport sysfrom pynput import keyboard, mouseimport threadingimport queuefrom config import *# --- SETUP ---os.makedirs(FRAME_DIR, exist_ok=True)with mss.mss() as sct:    monitor = sct.monitors[1]    SCREEN_WIDTH, SCREEN_HEIGHT = monitor["width"], monitor["height"]# --- GLOBAL STATE ---pressed_keys = set()mouse_buttons = {'left': 0, 'right': 0}last_mouse_pos = (0, 0) # Store raw pixel coordinatesmouse_deltas = (0.0, 0.0) # Store normalized deltasrunning = Truedata_lock = threading.Lock()save_queue = queue.Queue()# --- INPUT LISTENERS ---def get_key_str(key):    if hasattr(key, 'char') and key.char: return key.char.lower()    if hasattr(key, 'name'): return key.name.replace('_l', '').replace('_r', '')    return Nonedef on_key_press(key):    global running    if key in (keyboard.Key.f12, keyboard.Key.esc):        running = False; print("🛑 Quit key pressed.")        return    if (key_str := get_key_str(key)) in COMMON_KEYS:        with data_lock: pressed_keys.add(key_str)def on_key_release(key):    if (key_str := get_key_str(key)) in COMMON_KEYS:        with data_lock: pressed_keys.discard(key_str)def on_click(x, y, button, pressed):    with data_lock:        if button == mouse.Button.left: mouse_buttons['left'] = int(pressed)        elif button == mouse.Button.right: mouse_buttons['right'] = int(pressed)def on_move(x, y):    global last_mouse_pos, mouse_deltas    with data_lock:        dx = x - last_mouse_pos[0]        dy = y - last_mouse_pos[1]        # Normalize deltas to be resolution-independent        mouse_deltas = (dx / SCREEN_WIDTH, dy / SCREEN_HEIGHT)        last_mouse_pos = (x, y)# --- CORE FUNCTIONS ---def capture_frame():    with mss.mss() as sct:        img = np.array(sct.grab(sct.monitors[1]))        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)        return cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))def get_current_action():    with data_lock:        key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]        # The action vector now contains mouse DELTAS, not absolute positions        action = key_vector + list(mouse_deltas) + [mouse_buttons['left'], mouse_buttons['right']]        # Reset deltas after they are read        global mouse_deltas; mouse_deltas = (0.0, 0.0)        return action, key_vector, [mouse_buttons['left'], mouse_buttons['right']]def saver_thread(actions_list):    """A daemon thread that pulls data from a queue and saves it to disk."""    while True:        try:            data = save_queue.get()            if data is None: break # Sentinel value to stop the thread            frame_path, frame, action = data            cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))            actions_list.append(action)        except Exception as e:            print(f"⚠️ Saver thread error: {e}")    print("✅ Saver thread finished.")def signal_handler(signum, frame):    global running; running = False; print(f"\n🛑 Signal {signum} received, shutting down.")# --- MAIN EXECUTION ---if __name__ == "__main__":    signal.signal(signal.SIGINT, signal_handler)    signal.signal(signal.SIGTERM, signal_handler)        actions_path = os.path.join(DATA_DIR, ACTIONS_FILE)    actions = []        print("\n" + "="*50 + f"\n🟢 Starting recording in 5 seconds...\n   Screen: {SCREEN_WIDTH}x{SCREEN_HEIGHT} | FPS: {RECORDING_FPS}\n   Press [F12] or [ESC] to quit.\n" + "="*50 + "\n")    time.sleep(5)        # Initialize last mouse position    mouse_controller = mouse.Controller()    last_mouse_pos = mouse_controller.position        # Start listeners and saver thread    threading.Thread(target=saver_thread, args=(actions,), daemon=True).start()    key_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)    mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)    key_listener.start(); mouse_listener.start()        frame_interval, frame_index = 1.0 / RECORDING_FPS, 0        try:        while running:            start_time = time.time()                        frame = capture_frame()            action, keys, clicks = get_current_action()                        # Intelligent recording: only save if there is an action            is_key_action = sum(keys) > 0            is_click_action = sum(clicks) > 0            is_mouse_action = abs(action[len(keys)]) > MOUSE_DELTA_THRESHOLD or abs(action[len(keys)+1]) > MOUSE_DELTA_THRESHOLD                        if is_key_action or is_click_action or is_mouse_action:                frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")                # Put data into the queue for the saver thread                save_queue.put((frame_path, frame, action))                                print(f"Frame {frame_index}: keys={list(p for i,p in enumerate(COMMON_KEYS) if keys[i])}, "                      f"mouse=({action[-4]:.3f}, {action[-3]:.3f}), clicks=({action[-2]},{action[-1]})")                frame_index += 1            # Sleep to maintain desired FPS            elapsed = time.time() - start_time            sleep_time = frame_interval - elapsed            if sleep_time > 0: time.sleep(sleep_time)    finally:        print("🛑 Stopping listeners and saving data...")        key_listener.stop(); mouse_listener.stop()                # Signal the saver thread to exit and wait for it        save_queue.put(None)        time.sleep(2) # Give it a moment to process remaining items                if actions:            np.save(actions_path, np.array(actions, dtype=np.float32))            print(f"\n✅ Saved {len(actions)} action frames to {DATA_DIR}.")        else:            print("\nNo actions were recorded.")
+import cv2
+import mss
+import numpy as np
+import os
+import time
+import signal
+import sys
+from pynput import keyboard, mouse
+import threading
+import queue
+from config import *
+
+# --- SETUP ---
+os.makedirs(FRAME_DIR, exist_ok=True)
+with mss.mss() as sct:
+    monitor = sct.monitors[1]
+    SCREEN_WIDTH, SCREEN_HEIGHT = monitor["width"], monitor["height"]
+
+# --- GLOBAL STATE ---
+pressed_keys = set()
+mouse_buttons = {'left': 0, 'right': 0}
+last_mouse_pos = (0, 0)
+mouse_deltas = (0.0, 0.0)
+running = True
+data_lock = threading.Lock()
+save_queue = queue.Queue()
+
+# --- INPUT LISTENERS ---
+def get_key_str(key):
+    if hasattr(key, 'char') and key.char:
+        return key.char.lower()
+    if hasattr(key, 'name'):
+        return key.name.replace('_l', '').replace('_r', '')
+    return None
+
+def on_key_press(key):
+    global running
+    if key in (keyboard.Key.f12, keyboard.Key.esc):
+        running = False
+        print("🛑 Quit key pressed.")
+        return
+    if (key_str := get_key_str(key)) in COMMON_KEYS:
+        with data_lock:
+            pressed_keys.add(key_str)
+
+def on_key_release(key):
+    if (key_str := get_key_str(key)) in COMMON_KEYS:
+        with data_lock:
+            pressed_keys.discard(key_str)
+
+def on_click(x, y, button, pressed):
+    with data_lock:
+        if button == mouse.Button.left:
+            mouse_buttons['left'] = int(pressed)
+        elif button == mouse.Button.right:
+            mouse_buttons['right'] = int(pressed)
+
+def on_move(x, y):
+    global last_mouse_pos, mouse_deltas
+    with data_lock:
+        dx = x - last_mouse_pos[0]
+        dy = y - last_mouse_pos[1]
+        mouse_deltas = (dx / SCREEN_WIDTH, dy / SCREEN_HEIGHT)
+        last_mouse_pos = (x, y)
+
+# --- CORE FUNCTIONS ---
+def capture_frame():
+    with mss.mss() as sct:
+        img = np.array(sct.grab(sct.monitors[1]))
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+        return cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
+
+def get_current_action():
+    global mouse_deltas
+    with data_lock:
+        key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]
+        action = key_vector + list(mouse_deltas) + [mouse_buttons['left'], mouse_buttons['right']]
+        mouse_deltas = (0.0, 0.0)  # Reset deltas
+        return action, key_vector, [mouse_buttons['left'], mouse_buttons['right']]
+
+def saver_thread(actions_list):
+    """A daemon thread that pulls data from a queue and saves it to disk."""
+    while True:
+        try:
+            data = save_queue.get()
+            if data is None:
+                break  # Sentinel value to stop the thread
+            frame_path, frame, action = data
+            cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            actions_list.append(action)
+        except Exception as e:
+            print(f"⚠️ Saver thread error: {e}")
+    print("✅ Saver thread finished.")
+
+def signal_handler(signum, frame):
+    global running
+    running = False
+    print(f"\n🛑 Signal {signum} received, shutting down.")
+
+# --- MAIN EXECUTION ---
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    actions_path = os.path.join(DATA_DIR, ACTIONS_FILE)
+    actions = []
+
+    print("\n" + "=" * 50)
+    print(f"🟢 Starting recording in 5 seconds...")
+    print(f"   Screen: {SCREEN_WIDTH}x{SCREEN_HEIGHT} | FPS: {RECORDING_FPS}")
+    print(f"   Press [F12] or [ESC] to quit.")
+    print("=" * 50 + "\n")
+    time.sleep(5)
+
+    mouse_controller = mouse.Controller()
+    last_mouse_pos = mouse_controller.position
+
+    threading.Thread(target=saver_thread, args=(actions,), daemon=True).start()
+    key_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
+    mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)
+    key_listener.start()
+    mouse_listener.start()
+
+    frame_interval = 1.0 / RECORDING_FPS
+    frame_index = 0
+
+    try:
+        while running:
+            start_time = time.time()
+
+            frame = capture_frame()
+            action, keys, clicks = get_current_action()
+
+            is_key_action = sum(keys) > 0
+            is_click_action = sum(clicks) > 0
+            is_mouse_action = (
+                abs(action[len(keys)]) > MOUSE_DELTA_THRESHOLD or
+                abs(action[len(keys) + 1]) > MOUSE_DELTA_THRESHOLD
+            )
+
+            if is_key_action or is_click_action or is_mouse_action:
+                frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
+                save_queue.put((frame_path, frame, action))
+
+                print(
+                    f"Frame {frame_index}: keys={list(p for i, p in enumerate(COMMON_KEYS) if keys[i])}, "
+                    f"mouse=({action[-4]:.3f}, {action[-3]:.3f}), clicks=({action[-2]},{action[-1]})"
+                )
+                frame_index += 1
+
+            elapsed = time.time() - start_time
+            sleep_time = frame_interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    finally:
+        print("🛑 Stopping listeners and saving data...")
+        key_listener.stop()
+        mouse_listener.stop()
+
+        save_queue.put(None)
+        time.sleep(2)
+
+        if actions:
+            np.save(actions_path, np.array(actions, dtype=np.float32))
+            print(f"\n✅ Saved {len(actions)} action frames to {DATA_DIR}.")
+        else:
+            print("\nNo actions were recorded.")

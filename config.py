@@ -56,10 +56,9 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_v2"
 
 # === KEY MAPPING ===
 COMMON_KEYS = [
-    "w","a","s","d",                # Movement
-    "space","shift","ctrl",         # Actions
-    "1","2","3","4","5","6",        # Hotkeys
-    "e","r","tab",                  # Interact, reload, menu
+    "w","a","s","d",                        # Movement
+    "1","2","3","4","5","6",                # Hotkeys
+    "e","r","tab","space","shift","ctrl",   # Interact, reload, menu, actions
 ]
 
 KEY_MAPPING = {

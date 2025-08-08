@@ -139,7 +139,6 @@ cython_debug/
 *.onnx
 *.pb
 *.joblib
-*.npy
 *.npz
 
 # Video, image, and audio outputs
@@ -148,7 +147,6 @@ cython_debug/
 *.mov
 *.mkv
 *.png
-*.jpg
 *.jpeg
 *.bmp
 *.gif

@@ -56,7 +56,7 @@ class BehaviorCloningTransformer(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, nlayers)
         self.d_model = d_model
 
-        # Enhanced Output heads with better architecture (matching training)
+        # Output heads matching the training script
         self.key_head = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
@@ -64,15 +64,15 @@ class BehaviorCloningTransformer(nn.Module):
             nn.Linear(d_model // 2, len(COMMON_KEYS))
         )
         
+        # Mouse position head uses Tanh for delta positions
         self.mouse_pos_head = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, 2),
-            nn.Sigmoid()
+            nn.Tanh()
         )
         
-        # Enhanced click head with more capacity for rare events
         self.mouse_click_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.ReLU(),
@@ -101,8 +101,7 @@ class BehaviorCloningTransformer(nn.Module):
 
 # --- SETUP ---
 device = torch.device("cpu")
-# Output dim is keys + mouse position (x, y) + mouse clicks (L, R)
-output_dim = len(COMMON_KEYS) + 2 + 2
+output_dim = len(COMMON_KEYS) + 2 + 2 # keys + delta_pos + clicks
 model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT)
 action_threshold = 0.5
 
@@ -138,7 +137,6 @@ ai_enabled = False
 frame_sequence = deque(maxlen=SEQUENCE_LENGTH)
 current_pressed_keys = set()
 current_mouse_buttons = set()
-target_mouse_pos = (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2)
 
 transform = transforms.Compose([
     transforms.ToPILImage(),
@@ -160,25 +158,27 @@ def on_press(key):
         print(f"🤖 AI control is now {status}")
 
 def apply_output(output):
-    global target_mouse_pos
     output = output.detach().cpu()
     
     # Separate the output tensor into its components
     num_keys = len(COMMON_KEYS)
     key_logits = output[:num_keys]
-    mouse_pos = output[num_keys : num_keys+2]
+    mouse_delta = output[num_keys : num_keys+2]
     click_logits = output[num_keys+2:num_keys+4]
 
-    # Apply sigmoid ONLY to the logits for keys and clicks
+    # --- MOUSE MOVEMENT ---
+    # The model outputs a normalized delta in the range [-1, 1].
+    # We scale this back to pixel values for movement.
+    delta_x = mouse_delta[0].item() * SCREEN_WIDTH
+    delta_y = mouse_delta[1].item() * SCREEN_HEIGHT
+    
+    # Apply a deadzone to prevent jitter when the model wants to stay still
+    if abs(delta_x) > MOUSE_DEADZONE or abs(delta_y) > MOUSE_DEADZONE:
+        mouse_controller.move(delta_x, delta_y)
+
+    # --- KEYBOARD ACTIONS ---
     key_probs = torch.sigmoid(key_logits).numpy()
-    click_probs = torch.sigmoid(click_logits).numpy()
-    
-    # The mouse position is already a probability from the model, so we use it directly
-    mouse_x, mouse_y = mouse_pos[0].item(), mouse_pos[1].item()
-    target_mouse_pos = (mouse_x * SCREEN_WIDTH, mouse_y * SCREEN_HEIGHT)
-    
     key_thresh_to_use = action_threshold if action_threshold is not None else KEY_THRESHOLD
-    click_thresh_to_use = action_threshold if action_threshold is not None else CLICK_THRESHOLD
     
     for i, key_str in enumerate(COMMON_KEYS):
         if not (pynput_key := KEY_MAPPING.get(key_str)): continue
@@ -190,7 +190,11 @@ def apply_output(output):
         elif not is_pressed and key_str in current_pressed_keys:
             keyboard_controller.release(pynput_key)
             current_pressed_keys.remove(key_str)
-            
+
+    # --- MOUSE CLICKS ---
+    click_probs = torch.sigmoid(click_logits).numpy()
+    click_thresh_to_use = action_threshold if action_threshold is not None else CLICK_THRESHOLD
+
     left_click = click_probs[0] > click_thresh_to_use
     right_click = click_probs[1] > click_thresh_to_use
     
@@ -207,15 +211,6 @@ def apply_output(output):
     elif not right_click and Button.right in current_mouse_buttons:
         mouse_controller.release(Button.right)
         current_mouse_buttons.remove(Button.right)
-
-def smooth_mouse_movement():
-    current_pos = mouse_controller.position
-    diff_x, diff_y = target_mouse_pos[0] - current_pos[0], target_mouse_pos[1] - current_pos[1]
-    
-    if abs(diff_x) > MOUSE_DEADZONE or abs(diff_y) > MOUSE_DEADZONE:
-        new_x = int(current_pos[0] + diff_x * SMOOTH_FACTOR)
-        new_y = int(current_pos[1] + diff_y * SMOOTH_FACTOR)
-        mouse_controller.position = (max(0, min(SCREEN_WIDTH - 1, new_x)), max(0, min(SCREEN_HEIGHT - 1, new_y)))
 
 def capture_frame():
     with mss.mss() as sct:
@@ -264,8 +259,6 @@ if __name__ == "__main__":
                         input_tensor = torch.stack(list(frame_sequence)).unsqueeze(0).to(device)
                         output = model(input_tensor)
                         apply_output(output[:, -1, :].squeeze())
-                
-                smooth_mouse_movement()
             
             time.sleep(0.001)
             

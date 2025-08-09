@@ -27,8 +27,8 @@ print(f"Keys being recorded: {len(COMMON_KEYS)}")
 # ---------------------- Global State ----------------------
 pressed_keys = set()
 mouse_buttons = {"left": 0, "right": 0}
-mouse_position = (0.5, 0.5)           # Normalized position
-smoothed_mouse_position = (0.5, 0.5)  # Smoothed for recording
+# NEW: Track current mouse position for delta calculation
+current_mouse_position = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
 running = True
 data_lock = threading.Lock()  # Thread-safe access
 
@@ -74,17 +74,10 @@ def on_click(x, y, button, pressed):
             mouse_buttons["right"] = int(pressed)
 
 def on_move(x, y):
-    """Handle mouse movement events and apply smoothing."""
-    global mouse_position, smoothed_mouse_position
+    """Handle mouse movement events by updating the current position."""
+    global current_mouse_position
     with data_lock:
-        raw_position = (x / SCREEN_WIDTH, y / SCREEN_HEIGHT)
-        mouse_position = raw_position
-
-        alpha = 0.3
-        smoothed_mouse_position = (
-            alpha * raw_position[0] + (1 - alpha) * smoothed_mouse_position[0],
-            alpha * raw_position[1] + (1 - alpha) * smoothed_mouse_position[1]
-        )
+        current_mouse_position = (x, y)
 
 # ---------------------- Recording ----------------------
 def capture_frame():
@@ -96,13 +89,13 @@ def capture_frame():
         img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
         return img
 
-def get_current_action():
-    """Construct the action vector for the current state."""
+def get_current_action(mouse_delta):
+    """Construct the action vector for the current state using mouse delta."""
     with data_lock:
         key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]
         action = (
             key_vector +
-            list(smoothed_mouse_position) +
+            list(mouse_delta) +
             [mouse_buttons["left"], mouse_buttons["right"]]
         )
         return action.copy(), pressed_keys.copy()
@@ -165,6 +158,8 @@ if __name__ == "__main__":
 
     frame_interval = 1.0 / RECORDING_FPS
     i = start_index
+    # Initialize last_mouse_position with the starting position
+    last_mouse_position = current_mouse_position
 
     try:
         last_capture_time = time.time()
@@ -174,8 +169,18 @@ if __name__ == "__main__":
                 last_capture_time = current_time
 
                 try:
+                    # Capture mouse state for delta calculation
+                    with data_lock:
+                        pos_now = current_mouse_position
+                    
+                    # Calculate and normalize the mouse delta
+                    delta_x = (pos_now[0] - last_mouse_position[0]) / SCREEN_WIDTH
+                    delta_y = (pos_now[1] - last_mouse_position[1]) / SCREEN_HEIGHT
+                    mouse_delta = (delta_x, delta_y)
+                    last_mouse_position = pos_now # Update last position for the next frame
+
                     frame = capture_frame()
-                    action, current_keys = get_current_action()
+                    action, current_keys = get_current_action(mouse_delta)
 
                     expected_length = len(COMMON_KEYS) + 2 + 2
                     if len(action) != expected_length:
@@ -186,8 +191,10 @@ if __name__ == "__main__":
                     cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                     actions.append(action)
 
-                    if current_keys or any(action[-2:]): # Check for active clicks
-                        print(f"Frame {i}: keys={list(current_keys)}, mouse=({action[-4]:.2f}, {action[-3]:.2f}), "
+                    # Log if there is any action
+                    mouse_moved = abs(delta_x) > 1e-6 or abs(delta_y) > 1e-6
+                    if current_keys or any(action[-2:]) or mouse_moved:
+                        print(f"Frame {i}: keys={list(current_keys)}, mouse_delta=({action[-4]:.3f}, {action[-3]:.3f}), "
                               f"click_L={action[-2]}, click_R={action[-1]}")
 
                     i += 1

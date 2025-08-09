@@ -26,7 +26,7 @@ INFERENCE_FPS = 30  # Increased from 30 for more responsive AI control
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
 # Adjusted for higher resolution and FPS
-BATCH_SIZE = 16  # Reduced from 32 due to higher resolution
+BATCH_SIZE = 8  # Reduced from 32 due to higher resolution
 EPOCHS = 50  # Increased epochs for better convergence
 LEARNING_RATE = 2e-4  # Slightly higher learning rate for better learning
 

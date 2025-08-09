@@ -8,7 +8,7 @@ import signal
 import numpy as np
 import threading
 from pynput import keyboard, mouse
-from config import *  # Import all settings from the config file
+from config import * # Import all settings from the config file
 
 # ---------------------- Setup ----------------------
 # Create directories if they don't exist
@@ -29,7 +29,6 @@ pressed_keys = set()
 mouse_buttons = {"left": 0, "right": 0}
 mouse_position = (0.5, 0.5)           # Normalized position
 smoothed_mouse_position = (0.5, 0.5)  # Smoothed for recording
-mouse_wheel = {"up": 0, "down": 0}
 running = True
 data_lock = threading.Lock()  # Thread-safe access
 
@@ -74,16 +73,6 @@ def on_click(x, y, button, pressed):
         elif button == mouse.Button.right:
             mouse_buttons["right"] = int(pressed)
 
-def on_scroll(x, y, dx, dy):
-    """Handle mouse wheel scroll events."""
-    with data_lock:
-        if dy > 0:
-            mouse_wheel["up"], mouse_wheel["down"] = 1, 0
-        elif dy < 0:
-            mouse_wheel["up"], mouse_wheel["down"] = 0, 1
-        else:
-            mouse_wheel["up"], mouse_wheel["down"] = 0, 0
-
 def on_move(x, y):
     """Handle mouse movement events and apply smoothing."""
     global mouse_position, smoothed_mouse_position
@@ -114,8 +103,7 @@ def get_current_action():
         action = (
             key_vector +
             list(smoothed_mouse_position) +
-            [mouse_buttons["left"], mouse_buttons["right"]] +
-            [mouse_wheel["up"], mouse_wheel["down"]]
+            [mouse_buttons["left"], mouse_buttons["right"]]
         )
         return action.copy(), pressed_keys.copy()
 
@@ -171,7 +159,7 @@ if __name__ == "__main__":
 
     # Start input listeners
     key_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
-    mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move, on_scroll=on_scroll)
+    mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)
     key_listener.start()
     mouse_listener.start()
 
@@ -189,7 +177,7 @@ if __name__ == "__main__":
                     frame = capture_frame()
                     action, current_keys = get_current_action()
 
-                    expected_length = len(COMMON_KEYS) + 2 + 2 + 2
+                    expected_length = len(COMMON_KEYS) + 2 + 2
                     if len(action) != expected_length:
                         print(f"⚠️ Invalid action length: {len(action)} (expected {expected_length}). Skipping.")
                         continue
@@ -198,9 +186,9 @@ if __name__ == "__main__":
                     cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                     actions.append(action)
 
-                    if current_keys or action[-4:] != [0, 0, 0, 0]:
-                        print(f"Frame {i}: keys={list(current_keys)}, mouse=({action[-6]:.2f}, {action[-5]:.2f}), "
-                              f"click_L={action[-4]}, click_R={action[-3]}, wheel_up={action[-2]}, wheel_down={action[-1]}")
+                    if current_keys or any(action[-2:]): # Check for active clicks
+                        print(f"Frame {i}: keys={list(current_keys)}, mouse=({action[-4]:.2f}, {action[-3]:.2f}), "
+                              f"click_L={action[-2]}, click_R={action[-1]}")
 
                     i += 1
 
@@ -221,12 +209,11 @@ if __name__ == "__main__":
         mouse_listener.stop()
 
         with data_lock:
-            mouse_wheel["up"] = mouse_wheel["down"] = 0
             mouse_buttons["left"] = mouse_buttons["right"] = 0
 
         if actions:
             try:
-                expected_length = len(COMMON_KEYS) + 2 + 2 + 2
+                expected_length = len(COMMON_KEYS) + 2 + 2
                 valid_actions = [a for a in actions if len(a) == expected_length]
                 if valid_actions:
                     np.save(actions_path, np.array(valid_actions, dtype=np.float32))

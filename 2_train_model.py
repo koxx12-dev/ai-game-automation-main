@@ -63,6 +63,7 @@ class WoWSequenceDataset(Dataset):
         for i in range(len(self.frame_paths) - self.sequence_length + 1):
             last_action = self.actions[i + self.sequence_length - 1]
             key_press = np.sum(last_action[:num_keys]) > 0
+            # Slicing updated to check clicks at their new position
             mouse_click = np.sum(last_action[num_keys+2:]) > 0
 
             if key_press or mouse_click:
@@ -168,14 +169,6 @@ class BehaviorCloningTransformer(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, 2)
         )
-        
-        # Mouse wheel head for scroll up/down
-        self.mouse_wheel_head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, 2)
-        )
 
     def forward(self, x):
         b, s, c, h, w = x.shape
@@ -196,10 +189,9 @@ class BehaviorCloningTransformer(nn.Module):
         key_out = self.key_head(transformer_out)
         pos_out = self.mouse_pos_head(transformer_out)
         click_out = self.mouse_click_head(transformer_out)
-        wheel_out = self.mouse_wheel_head(transformer_out)
         
         # Concatenate for loss calculation
-        return torch.cat([key_out, pos_out, click_out, wheel_out], dim=2)
+        return torch.cat([key_out, pos_out, click_out], dim=2)
 
 # === IMPROVED LOSS FUNCTION WITH CLASS WEIGHTS ===
 class FocalLoss(nn.Module):
@@ -226,36 +218,32 @@ def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
     """Enhanced loss function with focal loss for imbalanced classes."""
     num_keys = len(COMMON_KEYS)
     
-    # Updated slicing for new action vector: [keys, mouse_pos, clicks, wheel]
+    # Updated slicing for new action vector: [keys, mouse_pos, clicks]
     key_out = outputs[..., :num_keys]
     pos_out = outputs[..., num_keys:num_keys+2]
     click_out = outputs[..., num_keys+2:num_keys+4]  # Left/right clicks
-    wheel_out = outputs[..., num_keys+4:num_keys+6]  # Wheel up/down
     
     key_tgt = targets[..., :num_keys]
     pos_tgt = targets[..., num_keys:num_keys+2]
     click_tgt = targets[..., num_keys+2:num_keys+4]
-    wheel_tgt = targets[..., num_keys+4:num_keys+6]
     
-    # Use focal loss for keys, clicks, and wheel to handle class imbalance
+    # Use focal loss for keys and clicks to handle class imbalance
     focal_loss = FocalLoss(alpha=1, gamma=2)
     loss_keys = focal_loss(key_out, key_tgt)
     loss_clicks = focal_loss(click_out, click_tgt)
-    loss_wheel = focal_loss(wheel_out, wheel_tgt)
     
     # Use MSE for mouse position (regression)
     mse_loss = nn.MSELoss()
     loss_pos = mse_loss(pos_out, pos_tgt)
     
     # Weight the losses based on importance and class balance
-    # Give more weight to clicks and wheel since they're rare
-    total_loss = loss_keys + 3.0 * loss_clicks + 2.0 * loss_wheel + 0.5 * loss_pos
+    # Give more weight to clicks since they're rare
+    total_loss = loss_keys + 3.0 * loss_clicks + 0.5 * loss_pos
     
     # Log individual losses if writer is provided
     if writer and step is not None:
         writer.add_scalar("Loss/keys", loss_keys.item(), step)
         writer.add_scalar("Loss/clicks", loss_clicks.item(), step)
-        writer.add_scalar("Loss/wheel", loss_wheel.item(), step)
         writer.add_scalar("Loss/position", loss_pos.item(), step)
         writer.add_scalar("Loss/total", total_loss.item(), step)
     
@@ -265,16 +253,24 @@ def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
 def validate(model, dataloader, device, writer, epoch):
     model.eval()
     all_preds, all_tgts = [], []
+    num_keys = len(COMMON_KEYS)
 
     with torch.no_grad():
         for seqs, acts in dataloader:
             seqs, acts = seqs.to(device), acts.to(device)
             out = model(seqs)
             
-            preds_keys_clicks = torch.sigmoid(torch.cat([out[..., :len(COMMON_KEYS)], out[..., len(COMMON_KEYS)+2:]], dim=-1))
-            preds_pos = out[..., len(COMMON_KEYS):len(COMMON_KEYS)+2]
-            preds = torch.cat([preds_keys_clicks, preds_pos], dim=-1)
-            
+            # Correctly separate logits and probabilities
+            keys_logits = out[..., :num_keys]
+            pos_preds_prob = out[..., num_keys:num_keys+2] # Already sigmoid
+            clicks_logits = out[..., num_keys+2:num_keys+4]
+
+            keys_preds_prob = torch.sigmoid(keys_logits)
+            clicks_preds_prob = torch.sigmoid(clicks_logits)
+
+            # Recombine in the correct order: [keys, pos, clicks]
+            preds = torch.cat([keys_preds_prob, pos_preds_prob, clicks_preds_prob], dim=-1)
+
             preds_agg = preds[:, -VALIDATION_WINDOW:, :].mean(dim=1)
             tgts_agg = acts[:, -VALIDATION_WINDOW:, :].max(dim=1)[0]
 
@@ -284,23 +280,20 @@ def validate(model, dataloader, device, writer, epoch):
     all_preds = np.vstack(all_preds)
     all_tgts = np.vstack(all_tgts)
 
-    num_keys = len(COMMON_KEYS)
-    # Updated slicing for new action vector: [keys, mouse_pos, clicks, wheel]
+    # Updated slicing for new action vector: [keys, mouse_pos, clicks]
     key_preds = all_preds[:, :num_keys]
     pos_preds = all_preds[:, num_keys:num_keys+2]
     click_preds = all_preds[:, num_keys+2:num_keys+4]
-    wheel_preds = all_preds[:, num_keys+4:num_keys+6]
     
     key_tgts = all_tgts[:, :num_keys]
     pos_tgts = all_tgts[:, num_keys:num_keys+2]
     click_tgts = all_tgts[:, num_keys+2:num_keys+4]
-    wheel_tgts = all_tgts[:, num_keys+4:num_keys+6]
 
     best_f1 = 0.0
     best_thresh = 0.5
     for thresh in THRESHOLD_SWEEP:
-        binary_preds = (np.hstack([key_preds, click_preds, wheel_preds]) > thresh).astype(int)
-        binary_tgts = np.hstack([key_tgts, click_tgts, wheel_tgts])
+        binary_preds = (np.hstack([key_preds, click_preds]) > thresh).astype(int)
+        binary_tgts = np.hstack([key_tgts, click_tgts])
         _, _, f1, _ = precision_recall_fscore_support(binary_tgts, binary_preds, average="samples", zero_division=0)
         if f1 > best_f1:
             best_f1 = f1
@@ -321,14 +314,12 @@ def validate(model, dataloader, device, writer, epoch):
     # Log action counts
     key_action_count = np.sum(np.any(key_tgts > 0, axis=1))
     click_action_count = np.sum(np.any(click_tgts > 0, axis=1))
-    wheel_action_count = np.sum(np.any(wheel_tgts > 0, axis=1))
     writer.add_scalar("Validation/Key_Action_Count", key_action_count, epoch)
     writer.add_scalar("Validation/Click_Action_Count", click_action_count, epoch)
-    writer.add_scalar("Validation/Wheel_Action_Count", wheel_action_count, epoch)
     
     # Create confusion matrix
-    cm_preds = (np.hstack([key_preds, click_preds, wheel_preds]) > best_thresh).astype(int).flatten()
-    cm_tgts = np.hstack([key_tgts, click_tgts, wheel_tgts]).flatten()
+    cm_preds = (np.hstack([key_preds, click_preds]) > best_thresh).astype(int).flatten()
+    cm_tgts = np.hstack([key_tgts, click_tgts]).flatten()
     cm = confusion_matrix(cm_tgts, cm_preds)
     
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -342,7 +333,7 @@ def validate(model, dataloader, device, writer, epoch):
     plt.close(fig)
     
     # Plot prediction distributions
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
     
     ax1.hist(key_preds.flatten(), bins=50, alpha=0.7, label='Key predictions')
     ax1.axvline(x=best_thresh, color='red', linestyle='--', label=f'Threshold {best_thresh:.2f}')
@@ -358,18 +349,11 @@ def validate(model, dataloader, device, writer, epoch):
     ax2.set_title('Click Prediction Distribution')
     ax2.legend()
     
-    ax3.hist(wheel_preds.flatten(), bins=50, alpha=0.7, label='Wheel predictions')
-    ax3.axvline(x=best_thresh, color='red', linestyle='--', label=f'Threshold {best_thresh:.2f}')
-    ax3.set_xlabel('Prediction Probability')
+    ax3.hist(pos_preds.flatten(), bins=50, alpha=0.7, label='Position predictions')
+    ax3.set_xlabel('Prediction Value')
     ax3.set_ylabel('Count')
-    ax3.set_title('Wheel Prediction Distribution')
+    ax3.set_title('Mouse Position Distribution')
     ax3.legend()
-    
-    ax4.hist(pos_preds.flatten(), bins=50, alpha=0.7, label='Position predictions')
-    ax4.set_xlabel('Prediction Value')
-    ax4.set_ylabel('Count')
-    ax4.set_title('Mouse Position Distribution')
-    ax4.legend()
     
     writer.add_figure("Validation/Prediction_Distributions", fig, epoch)
     plt.close(fig)
@@ -435,7 +419,8 @@ def train(start_tensorboard_auto=True):
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output_dim = len(COMMON_KEYS) + 4
+    # Output dim is keys + mouse position (x, y) + mouse clicks (L, R)
+    output_dim = len(COMMON_KEYS) + 2 + 2
     
     model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)

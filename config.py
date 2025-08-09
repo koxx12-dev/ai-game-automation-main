@@ -46,7 +46,6 @@ THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # Extended range
 # === FPS-OPTIMIZED INFERENCE THRESHOLDS ===
 KEY_THRESHOLD = 0.5  # Stricter threshold after validation
 CLICK_THRESHOLD = 0.5
-WHEEL_THRESHOLD = 0.5  # Mouse wheel threshold
 # Mouse smoothing parameters (optimized for FPS)
 MOUSE_SMOOTHING_ALPHA = 0.4  # More responsive for FPS (was 0.3)
 SMOOTH_FACTOR = 0.7  # Faster movement for FPS (was 0.6)
@@ -60,10 +59,11 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_improved"  # New experiment name
 # === FPS-OPTIMIZED KEY MAPPING ===
 # This list defines the order and size of the keyboard action space for the model.
 # Optimized for FPS gaming with primary movement and action keys.
+# FIXED: Corrected syntax error in this list
 COMMON_KEYS = [
-    "w","a","s","d",                                    # Primary movement (WASD)
-    "1","2","3","4","5","6",                            # Weapon hotkeys
-    "e","r","f",,"m""tab","space","shift","ctrl",       # Interact, reload, menu, actions
+    "w", "a", "s", "d",                                 # Primary movement (WASD)
+    "1", "2", "3", "4", "5", "6",                         # Weapon hotkeys
+    "e", "r", "f", "m", "tab", "space", "shift", "ctrl",  # Interact, reload, menu, actions
 ]
 
 # This dictionary maps the string representation to pynput key objects for inference.

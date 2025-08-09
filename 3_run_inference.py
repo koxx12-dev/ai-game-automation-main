@@ -82,14 +82,6 @@ class BehaviorCloningTransformer(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, 2)
         )
-        
-        # Mouse wheel head for scroll up/down
-        self.mouse_wheel_head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, 2)
-        )
 
     def forward(self, x):
         b, s, c, h, w = x.shape
@@ -105,12 +97,12 @@ class BehaviorCloningTransformer(nn.Module):
         key_out = self.key_head(transformer_out)
         pos_out = self.mouse_pos_head(transformer_out)
         click_out = self.mouse_click_head(transformer_out)
-        wheel_out = self.mouse_wheel_head(transformer_out)
-        return torch.cat([key_out, pos_out, click_out, wheel_out], dim=2)
+        return torch.cat([key_out, pos_out, click_out], dim=2)
 
 # --- SETUP ---
 device = torch.device("cpu")
-output_dim = len(COMMON_KEYS) + 4
+# Output dim is keys + mouse position (x, y) + mouse clicks (L, R)
+output_dim = len(COMMON_KEYS) + 2 + 2
 model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT)
 action_threshold = 0.5
 
@@ -146,7 +138,6 @@ ai_enabled = False
 frame_sequence = deque(maxlen=SEQUENCE_LENGTH)
 current_pressed_keys = set()
 current_mouse_buttons = set()
-current_mouse_wheel = {'up': False, 'down': False}
 target_mouse_pos = (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2)
 
 transform = transforms.Compose([
@@ -168,7 +159,6 @@ def on_press(key):
         status = "ENABLED" if ai_enabled else "DISABLED"
         print(f"🤖 AI control is now {status}")
 
-# 🐛 FIXED: This function now correctly handles the model's output
 def apply_output(output):
     global target_mouse_pos
     output = output.detach().cpu()
@@ -178,14 +168,12 @@ def apply_output(output):
     key_logits = output[:num_keys]
     mouse_pos = output[num_keys : num_keys+2]
     click_logits = output[num_keys+2:num_keys+4]
-    wheel_logits = output[num_keys+4:num_keys+6]
 
-    # Apply sigmoid ONLY to the logits for keys, clicks, and wheel
+    # Apply sigmoid ONLY to the logits for keys and clicks
     key_probs = torch.sigmoid(key_logits).numpy()
     click_probs = torch.sigmoid(click_logits).numpy()
-    wheel_probs = torch.sigmoid(wheel_logits).numpy()
     
-    # The mouse position is already a probability, so we use it directly
+    # The mouse position is already a probability from the model, so we use it directly
     mouse_x, mouse_y = mouse_pos[0].item(), mouse_pos[1].item()
     target_mouse_pos = (mouse_x * SCREEN_WIDTH, mouse_y * SCREEN_HEIGHT)
     
@@ -219,24 +207,6 @@ def apply_output(output):
     elif not right_click and Button.right in current_mouse_buttons:
         mouse_controller.release(Button.right)
         current_mouse_buttons.remove(Button.right)
-        
-    # Handle mouse wheel scrolling
-    wheel_thresh_to_use = action_threshold if action_threshold is not None else WHEEL_THRESHOLD
-    
-    wheel_up = wheel_probs[0] > wheel_thresh_to_use
-    wheel_down = wheel_probs[1] > wheel_thresh_to_use
-    
-    if wheel_up and not current_mouse_wheel['up']:
-        mouse_controller.scroll(0, 1)  # Scroll up
-        current_mouse_wheel['up'] = True
-        current_mouse_wheel['down'] = False
-    elif wheel_down and not current_mouse_wheel['down']:
-        mouse_controller.scroll(0, -1)  # Scroll down
-        current_mouse_wheel['up'] = False
-        current_mouse_wheel['down'] = True
-    elif not wheel_up and not wheel_down:
-        current_mouse_wheel['up'] = False
-        current_mouse_wheel['down'] = False
 
 def smooth_mouse_movement():
     current_pos = mouse_controller.position

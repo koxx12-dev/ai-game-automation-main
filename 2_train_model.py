@@ -45,8 +45,7 @@ class EarlyStopping:
 # === DATASET ===
 class WoWSequenceDataset(Dataset):
     """Custom dataset for loading sequences of frames and actions."""
-    def __init__(self, frame_dir, actions_file, sequence_length, transform=None):
-        self.transform = transform
+    def __init__(self, frame_dir, actions_file, sequence_length):
         self.sequence_length = sequence_length
 
         frame_paths = sorted([os.path.join(frame_dir, f) for f in os.listdir(frame_dir) if f.endswith(".jpg")])
@@ -63,7 +62,6 @@ class WoWSequenceDataset(Dataset):
         for i in range(len(self.frame_paths) - self.sequence_length + 1):
             last_action = self.actions[i + self.sequence_length - 1]
             key_press = np.sum(last_action[:num_keys]) > 0
-            # Slicing updated to check clicks at their new position
             mouse_click = np.sum(last_action[num_keys+2:]) > 0
 
             if key_press or mouse_click:
@@ -82,16 +80,38 @@ class WoWSequenceDataset(Dataset):
         start_index = self.indices[idx]
         end_index = start_index + self.sequence_length
 
+        # Return raw numpy images; transforms will be applied later
         imgs = []
         for i in range(start_index, end_index):
             img = cv2.imread(self.frame_paths[i])
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            if self.transform:
-                img = self.transform(img)
             imgs.append(img)
 
         seq_actions = self.actions[start_index:end_index]
-        return torch.stack(imgs), torch.tensor(seq_actions, dtype=torch.float32)
+        return imgs, torch.tensor(seq_actions, dtype=torch.float32)
+
+# === NEW: DATASET WRAPPER FOR AUGMENTATION ===
+class AugmentedDataset(Dataset):
+    """
+    Wrapper for a dataset subset that applies a specified transform pipeline.
+    This allows using different transforms for training and validation sets.
+    """
+    def __init__(self, subset, transform):
+        self.subset = subset
+        self.transform = transform
+
+    def __getitem__(self, index):
+        # imgs is a list of numpy arrays
+        imgs, actions = self.subset[index]
+        
+        # Apply the same transform pipeline to all images in the sequence
+        transformed_imgs = [self.transform(img) for img in imgs]
+        
+        return torch.stack(transformed_imgs), actions
+
+    def __len__(self):
+        return len(self.subset)
+
 
 # === NEW: POSITIONAL ENCODING ===
 class PositionalEncoding(nn.Module):
@@ -397,14 +417,25 @@ def train(start_tensorboard_auto=True):
     writer = SummaryWriter(log_dir=TENSORBOARD_LOG_DIR)
     early_stopper = EarlyStopping()
     
-    transform = transforms.Compose([
+    # NEW: Define separate transforms for training (with augmentation) and validation
+    train_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        transforms.RandomPerspective(distortion_scale=0.1, p=0.2),
+        transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    val_transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    datasets = [ds for d in DATA_DIRS if (fdir := os.path.join(d, "frames")) and (afile := os.path.join(d, ACTIONS_FILE)) and os.path.exists(fdir) and os.path.exists(afile) and len(ds := WoWSequenceDataset(fdir, afile, SEQUENCE_LENGTH, transform)) > 0]
+    # Load datasets without transforms initially
+    datasets = [ds for d in DATA_DIRS if (fdir := os.path.join(d, "frames")) and (afile := os.path.join(d, ACTIONS_FILE)) and os.path.exists(fdir) and os.path.exists(afile) and len(ds := WoWSequenceDataset(fdir, afile, SEQUENCE_LENGTH)) > 0]
     if not datasets:
         print("❌ No valid datasets found! Check DATA_DIRS in config.py.")
         return
@@ -412,8 +443,14 @@ def train(start_tensorboard_auto=True):
     full_dataset = ConcatDataset(datasets)
     val_size = int(len(full_dataset) * VALIDATION_SPLIT)
     train_size = len(full_dataset) - val_size
-    train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
-    print(f"\nTotal sequences: {len(full_dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
+    
+    # Split the dataset into subsets
+    train_subset, val_subset = random_split(full_dataset, [train_size, val_size])
+    print(f"\nTotal sequences: {len(full_dataset)} | Train: {train_size} | Val: {val_size}")
+
+    # NEW: Apply the respective transforms using the wrapper
+    train_ds = AugmentedDataset(train_subset, train_transform)
+    val_ds = AugmentedDataset(val_subset, val_transform)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)

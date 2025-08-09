@@ -63,8 +63,10 @@ class WoWSequenceDataset(Dataset):
             last_action = self.actions[i + self.sequence_length - 1]
             key_press = np.sum(last_action[:num_keys]) > 0
             mouse_click = np.sum(last_action[num_keys+2:]) > 0
+            # Also consider movement as an action for oversampling
+            mouse_delta = np.linalg.norm(last_action[num_keys:num_keys+2]) > 1e-4
 
-            if key_press or mouse_click:
+            if key_press or mouse_click or mouse_delta:
                 self.indices.extend([i] * OVERSAMPLE_ACTION_FRAMES_MULTIPLIER)
                 action_frames += 1
             else:
@@ -90,7 +92,7 @@ class WoWSequenceDataset(Dataset):
         seq_actions = self.actions[start_index:end_index]
         return imgs, torch.tensor(seq_actions, dtype=torch.float32)
 
-# === NEW: DATASET WRAPPER FOR AUGMENTATION ===
+# === DATASET WRAPPER FOR AUGMENTATION ===
 class AugmentedDataset(Dataset):
     """
     Wrapper for a dataset subset that applies a specified transform pipeline.
@@ -113,7 +115,7 @@ class AugmentedDataset(Dataset):
         return len(self.subset)
 
 
-# === NEW: POSITIONAL ENCODING ===
+## === POSITIONAL ENCODING ===
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=50):
         super().__init__()
@@ -162,8 +164,7 @@ class BehaviorCloningTransformer(nn.Module):
         
         self.d_model = d_model
 
-        # 5. Enhanced Output heads with better architecture
-        # Separate heads for different action types with different complexities
+        # 5. Enhanced Output heads
         self.key_head = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
@@ -171,15 +172,15 @@ class BehaviorCloningTransformer(nn.Module):
             nn.Linear(d_model // 2, len(COMMON_KEYS))
         )
         
+        # NEW: Mouse position head now uses Tanh for delta positions [-1, 1]
         self.mouse_pos_head = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, 2),
-            nn.Sigmoid()
+            nn.Tanh()
         )
         
-        # Enhanced click head with more capacity for rare events
         self.mouse_click_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.ReLU(),
@@ -214,6 +215,7 @@ class BehaviorCloningTransformer(nn.Module):
         return torch.cat([key_out, pos_out, click_out], dim=2)
 
 # === IMPROVED LOSS FUNCTION WITH CLASS WEIGHTS ===
+# === IMPROVED LOSS FUNCTION WITH CLASS WEIGHTS ===
 class FocalLoss(nn.Module):
     """Focal Loss to handle class imbalance."""
     def __init__(self, alpha=1, gamma=2, reduction='mean'):
@@ -238,26 +240,25 @@ def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
     """Enhanced loss function with focal loss for imbalanced classes."""
     num_keys = len(COMMON_KEYS)
     
-    # Updated slicing for new action vector: [keys, mouse_pos, clicks]
+    # Slicing for action vector: [keys, mouse_delta, clicks]
     key_out = outputs[..., :num_keys]
     pos_out = outputs[..., num_keys:num_keys+2]
-    click_out = outputs[..., num_keys+2:num_keys+4]  # Left/right clicks
+    click_out = outputs[..., num_keys+2:num_keys+4]
     
     key_tgt = targets[..., :num_keys]
     pos_tgt = targets[..., num_keys:num_keys+2]
     click_tgt = targets[..., num_keys+2:num_keys+4]
     
-    # Use focal loss for keys and clicks to handle class imbalance
+    # Use focal loss for keys and clicks
     focal_loss = FocalLoss(alpha=1, gamma=2)
     loss_keys = focal_loss(key_out, key_tgt)
     loss_clicks = focal_loss(click_out, click_tgt)
     
-    # Use MSE for mouse position (regression)
+    # Use MSE for mouse position delta (regression)
     mse_loss = nn.MSELoss()
     loss_pos = mse_loss(pos_out, pos_tgt)
     
-    # Weight the losses based on importance and class balance
-    # Give more weight to clicks since they're rare
+    # Weight the losses
     total_loss = loss_keys + 3.0 * loss_clicks + 0.5 * loss_pos
     
     # Log individual losses if writer is provided
@@ -280,16 +281,16 @@ def validate(model, dataloader, device, writer, epoch):
             seqs, acts = seqs.to(device), acts.to(device)
             out = model(seqs)
             
-            # Correctly separate logits and probabilities
+            # Separate model outputs
             keys_logits = out[..., :num_keys]
-            pos_preds_prob = out[..., num_keys:num_keys+2] # Already sigmoid
+            pos_preds_delta = out[..., num_keys:num_keys+2] # Now a delta from Tanh
             clicks_logits = out[..., num_keys+2:num_keys+4]
 
             keys_preds_prob = torch.sigmoid(keys_logits)
             clicks_preds_prob = torch.sigmoid(clicks_logits)
 
-            # Recombine in the correct order: [keys, pos, clicks]
-            preds = torch.cat([keys_preds_prob, pos_preds_prob, clicks_preds_prob], dim=-1)
+            # Recombine in the correct order: [keys_probs, pos_deltas, clicks_probs]
+            preds = torch.cat([keys_preds_prob, pos_preds_delta, clicks_preds_prob], dim=-1)
 
             preds_agg = preds[:, -VALIDATION_WINDOW:, :].mean(dim=1)
             tgts_agg = acts[:, -VALIDATION_WINDOW:, :].max(dim=1)[0]
@@ -300,7 +301,7 @@ def validate(model, dataloader, device, writer, epoch):
     all_preds = np.vstack(all_preds)
     all_tgts = np.vstack(all_tgts)
 
-    # Updated slicing for new action vector: [keys, mouse_pos, clicks]
+    # Slicing for action vector: [keys, mouse_delta, clicks]
     key_preds = all_preds[:, :num_keys]
     pos_preds = all_preds[:, num_keys:num_keys+2]
     click_preds = all_preds[:, num_keys+2:num_keys+4]
@@ -417,7 +418,7 @@ def train(start_tensorboard_auto=True):
     writer = SummaryWriter(log_dir=TENSORBOARD_LOG_DIR)
     early_stopper = EarlyStopping()
     
-    # NEW: Define separate transforms for training (with augmentation) and validation
+    # Define separate transforms for training (with augmentation) and validation
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
@@ -448,7 +449,7 @@ def train(start_tensorboard_auto=True):
     train_subset, val_subset = random_split(full_dataset, [train_size, val_size])
     print(f"\nTotal sequences: {len(full_dataset)} | Train: {train_size} | Val: {val_size}")
 
-    # NEW: Apply the respective transforms using the wrapper
+    # Apply the respective transforms using the wrapper
     train_ds = AugmentedDataset(train_subset, train_transform)
     val_ds = AugmentedDataset(val_subset, val_transform)
 
@@ -456,7 +457,7 @@ def train(start_tensorboard_auto=True):
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Output dim is keys + mouse position (x, y) + mouse clicks (L, R)
+    # Output dim is keys + mouse delta (x, y) + mouse clicks (L, R)
     output_dim = len(COMMON_KEYS) + 2 + 2
     
     model = BehaviorCloningTransformer(output_dim, D_MODEL, N_HEAD, N_LAYERS, DROPOUT).to(device)

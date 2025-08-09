@@ -1,3 +1,5 @@
 /runs/
 /venv/
 /data_human/
+/__pycache__/
+/runs/

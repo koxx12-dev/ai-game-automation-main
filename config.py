@@ -15,9 +15,9 @@ MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 # === FPS-OPTIMIZED IMAGE & SEQUENCE SETTINGS ===
 # Optimized for FPS gaming with better detail retention
 # Options: 360x240 (fast), 480x320 (balanced), 640x480 (detailed)
-IMG_WIDTH = 360  # Increased from 360 for better FPS detail
-IMG_HEIGHT = 240  # Increased from 240 for better FPS detail
-SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
+IMG_WIDTH = 480  # Increased from 360 for better FPS detail
+IMG_HEIGHT = 360  # Increased from 240 for better FPS detail
+SEQUENCE_LENGTH = 30  # Number of frames the model sees at once
 
 # === FPS-OPTIMIZED RECORDING & INFERENCE FPS ===
 # Higher FPS for better responsiveness in FPS games
@@ -26,7 +26,7 @@ INFERENCE_FPS = 30  # Increased from 30 for more responsive AI control
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
 # Adjusted for higher resolution and FPS
-BATCH_SIZE = 32  # Reduced from 32 due to higher resolution
+BATCH_SIZE = 16  # Reduced from 32 due to higher resolution
 EPOCHS = 50  # Increased epochs for better convergence
 LEARNING_RATE = 2e-4  # Slightly higher learning rate for better learning
 
@@ -61,10 +61,9 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_improved"  # New experiment name
 # This list defines the order and size of the keyboard action space for the model.
 # Optimized for FPS gaming with primary movement and action keys.
 COMMON_KEYS = [
-    "w","a","s","d",                # Primary movement (WASD)
-    "space","shift","ctrl",         # Actions (jump, sprint, crouch)
-    "1","2","3","4","5","6",        # Weapon hotkeys
-    "e","r","tab",                  # Interact, reload, menu
+    "w","a","s","d",                                    # Primary movement (WASD)
+    "1","2","3","4","5","6",                            # Weapon hotkeys
+    "e","r","f",,"m""tab","space","shift","ctrl",       # Interact, reload, menu, actions
 ]
 
 # This dictionary maps the string representation to pynput key objects for inference.

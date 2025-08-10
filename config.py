@@ -13,10 +13,9 @@ os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 
 # === FPS-OPTIMIZED IMAGE & SEQUENCE SETTINGS ===
-# Optimized for FPS gaming with better detail retention
 # Options: 360x240 (fast), 480x320 (balanced), 640x480 (detailed)
-IMG_WIDTH = 480  # Increased from 360 for better FPS detail
-IMG_HEIGHT = 360  # Increased from 240 for better FPS detail
+IMG_WIDTH = 480
+IMG_HEIGHT = 360
 SEQUENCE_LENGTH = 30  # Number of frames the model sees at once
 
 # === FPS-OPTIMIZED RECORDING & INFERENCE FPS ===
@@ -44,12 +43,9 @@ VALIDATION_WINDOW = 3  # Timesteps to aggregate for validation metrics
 THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # Extended range
 
 # === FPS-OPTIMIZED INFERENCE THRESHOLDS ===
-KEY_THRESHOLD = 0.5  # Stricter threshold after validation
+KEY_THRESHOLD = 0.5    # Stricter threshold after validation
 CLICK_THRESHOLD = 0.5
-# Mouse smoothing parameters (optimized for FPS)
-MOUSE_SMOOTHING_ALPHA = 0.4  # More responsive for FPS (was 0.3)
-SMOOTH_FACTOR = 0.7  # Faster movement for FPS (was 0.6)
-MOUSE_DEADZONE = 1  # Smaller deadzone for precision (was 2)
+MOUSE_DEADZONE = 1     # Smaller deadzone for precision (was 2)
 
 # === EARLY STOPPING & TENSORBOARD ===
 EARLY_STOPPING_PATIENCE = 8  # Increased patience for better convergence

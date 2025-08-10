@@ -38,7 +38,7 @@ N_LAYERS = 3   # Number of sub-encoder-layers in the transformer encoder
 DROPOUT = 0.1  # Dropout value
 
 # === DATASET BALANCING & VALIDATION ===
-OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 5  # Increased for better balance
+OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 2  # Increase for better balance
 VALIDATION_SPLIT = 0.15
 VALIDATION_WINDOW = 3  # Timesteps to aggregate for validation metrics
 THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # Extended range

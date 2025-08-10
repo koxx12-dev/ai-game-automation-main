@@ -48,8 +48,8 @@ def on_key_press(key):
         print("🛑 Quit key (F12) pressed. Stopping recording...")
         running = False
         return
-    elif key == keyboard.Key.esc:
-        print("🛑 Escape key pressed. Stopping recording...")
+    elif key == keyboard.Key.f2:
+        print("🛑 Quit key (F2) pressed. Stopping recording...")
         running = False
         return
 
@@ -145,7 +145,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("🟢 Starting HUMAN data recording in 5 seconds...")
     print("   Play the game normally.")
-    print("   Press [F12] or [ESC] to quit gracefully.")
+    print("   Press [F2] or [F12] to quit gracefully.")
     print("   Or use [Ctrl+C] in terminal for emergency stop.")
     print("=" * 50 + "\n")
     time.sleep(5)

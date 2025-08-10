@@ -10,7 +10,7 @@ import cv2
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split, Subset
 from torchvision import transforms
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 from torch.utils.tensorboard import SummaryWriter
@@ -115,7 +115,7 @@ class AugmentedDataset(Dataset):
         return len(self.subset)
 
 
-## === POSITIONAL ENCODING ===
+# === POSITIONAL ENCODING ===
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=50):
         super().__init__()
@@ -214,7 +214,6 @@ class BehaviorCloningTransformer(nn.Module):
         # Concatenate for loss calculation
         return torch.cat([key_out, pos_out, click_out], dim=2)
 
-# === IMPROVED LOSS FUNCTION WITH CLASS WEIGHTS ===
 # === IMPROVED LOSS FUNCTION WITH CLASS WEIGHTS ===
 class FocalLoss(nn.Module):
     """Focal Loss to handle class imbalance."""
@@ -370,10 +369,10 @@ def validate(model, dataloader, device, writer, epoch):
     ax2.set_title('Click Prediction Distribution')
     ax2.legend()
     
-    ax3.hist(pos_preds.flatten(), bins=50, alpha=0.7, label='Position predictions')
+    ax3.hist(pos_preds.flatten(), bins=50, alpha=0.7, label='Position Delta predictions')
     ax3.set_xlabel('Prediction Value')
     ax3.set_ylabel('Count')
-    ax3.set_title('Mouse Position Distribution')
+    ax3.set_title('Mouse Position Delta Distribution')
     ax3.legend()
     
     writer.add_figure("Validation/Prediction_Distributions", fig, epoch)
@@ -442,19 +441,32 @@ def train(start_tensorboard_auto=True):
         return
 
     full_dataset = ConcatDataset(datasets)
-    val_size = int(len(full_dataset) * VALIDATION_SPLIT)
-    train_size = len(full_dataset) - val_size
+    dataset_size = len(full_dataset)
+    val_size = int(dataset_size * VALIDATION_SPLIT)
+    train_size = dataset_size - val_size
     
-    # Split the dataset into subsets
-    train_subset, val_subset = random_split(full_dataset, [train_size, val_size])
-    print(f"\nTotal sequences: {len(full_dataset)} | Train: {train_size} | Val: {val_size}")
+    # --- NEW: Sequential Validation Split ---
+    # We use a sequential split because this is time-series data. A random split
+    # would cause data leakage, where the model trains on frames immediately
+    # adjacent to frames it's being validated on. This provides a more
+    # realistic measure of generalization.
+    print(f"\nSplitting data sequentially: Training on the first {100 * (1-VALIDATION_SPLIT):.0f}%, Validating on the last {100 * VALIDATION_SPLIT:.0f}%.")
+    
+    train_indices = range(train_size)
+    val_indices = range(train_size, dataset_size)
+
+    train_subset = Subset(full_dataset, train_indices)
+    val_subset = Subset(full_dataset, val_indices)
+    # --- End of new split logic ---
+
+    print(f"Total sequences: {dataset_size} | Train: {len(train_subset)} | Val: {len(val_subset)}")
 
     # Apply the respective transforms using the wrapper
     train_ds = AugmentedDataset(train_subset, train_transform)
     val_ds = AugmentedDataset(val_subset, val_transform)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=6, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=6, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Output dim is keys + mouse delta (x, y) + mouse clicks (L, R)

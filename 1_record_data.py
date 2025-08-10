@@ -7,14 +7,13 @@ import signal
 import numpy as np
 import threading
 import queue
+from collections import deque
 from pynput import keyboard, mouse
 from config import * # Import all settings from the config file
 
 # ---------------------- Setup ----------------------
-# Create directories if they don't exist
 os.makedirs(FRAME_DIR, exist_ok=True)
 
-# Get screen dimensions for mouse coordinate normalization
 with mss.mss() as sct:
     monitor = sct.monitors[1]
     SCREEN_WIDTH = monitor["width"]
@@ -23,6 +22,11 @@ with mss.mss() as sct:
 print(f"Detected screen resolution: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
 print(f"Recording at {IMG_WIDTH}x{IMG_HEIGHT} @ {RECORDING_FPS} FPS")
 print(f"Keys being recorded: {len(COMMON_KEYS)}")
+print(f"Intelligent Filtering: ENABLED")
+print(f"  - Idle Buffer Size: {IDLE_FRAME_BUFFER_SIZE} frames (~{IDLE_FRAME_BUFFER_SIZE/RECORDING_FPS:.1f}s)")
+print(f"  - Post-Action Save: {ACTION_POST_SAVE_FRAMES} frames (~{ACTION_POST_SAVE_FRAMES/RECORDING_FPS:.1f}s)")
+print(f"  - Mouse Action Threshold: {MOUSE_MOVE_ACTION_THRESHOLD}")
+
 
 # ---------------------- Global State & Threading Primitives ----------------------
 pressed_keys = set()
@@ -32,58 +36,39 @@ running = True
 data_lock = threading.Lock()
 stop_event = threading.Event()
 
-# Queues for inter-thread communication
-# frame_queue will store (frame_data, timestamp)
 frame_queue = queue.Queue(maxsize=RECORDING_FPS * 2) 
-# save_queue will store (frame_data, frame_path)
 save_queue = queue.Queue()
 
 # ---------------------- Input Handling ----------------------
 def get_key_str(key):
-    """Convert pynput key object to standardized string."""
-    if hasattr(key, "char") and key.char:
-        return key.char.lower()
-    elif hasattr(key, "name"):
-        return key.name.replace("_l", "").replace("_r", "")
+    if hasattr(key, "char") and key.char: return key.char.lower()
+    if hasattr(key, "name"): return key.name.replace("_l", "").replace("_r", "")
     return None
 
 def on_key_press(key):
-    """Handle key press events."""
     global running
     if key in (keyboard.Key.f12, keyboard.Key.f2):
         print("🛑 Quit key pressed. Stopping recording...")
         running = False
         return
-
-    key_str = get_key_str(key)
-    if key_str in COMMON_KEYS:
-        with data_lock:
-            pressed_keys.add(key_str)
+    if (key_str := get_key_str(key)) in COMMON_KEYS:
+        with data_lock: pressed_keys.add(key_str)
 
 def on_key_release(key):
-    """Handle key release events."""
-    key_str = get_key_str(key)
-    if key_str in COMMON_KEYS:
-        with data_lock:
-            pressed_keys.discard(key_str)
+    if (key_str := get_key_str(key)) in COMMON_KEYS:
+        with data_lock: pressed_keys.discard(key_str)
 
 def on_click(x, y, button, pressed):
-    """Handle mouse click events."""
     with data_lock:
-        if button == mouse.Button.left:
-            mouse_buttons["left"] = int(pressed)
-        elif button == mouse.Button.right:
-            mouse_buttons["right"] = int(pressed)
+        if button == mouse.Button.left: mouse_buttons["left"] = int(pressed)
+        elif button == mouse.Button.right: mouse_buttons["right"] = int(pressed)
 
 def on_move(x, y):
-    """Handle mouse movement events by updating the current position."""
     global current_mouse_position
-    with data_lock:
-        current_mouse_position = (x, y)
+    with data_lock: current_mouse_position = (x, y)
 
 # ---------------------- Asynchronous Worker Functions ----------------------
 def screen_capture_worker():
-    """Worker thread to continuously capture the screen."""
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         while not stop_event.is_set():
@@ -91,50 +76,38 @@ def screen_capture_worker():
                 img = np.array(sct.grab(monitor))
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
                 img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
-                
-                # Try to put the frame in the queue, but don't block if full
                 frame_queue.put_nowait((img, time.time()))
             except queue.Full:
-                # If queue is full, it means the main loop is lagging.
-                # We can skip this frame to prioritize newer ones.
                 continue 
             except Exception as e:
                 print(f"⚠️ Error in capture worker: {e}")
                 time.sleep(0.5)
 
 def file_save_worker():
-    """Worker thread to save frames to disk."""
     while not stop_event.is_set() or not save_queue.empty():
         try:
-            # Wait for up to 1 second for an item to appear
-            frame, frame_path = save_queue.get(timeout=1)
+            frame, frame_path, action = save_queue.get(timeout=1)
             cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
             save_queue.task_done()
         except queue.Empty:
-            # Queue is empty, continue loop until stop_event is set and queue is confirmed empty
             continue
         except Exception as e:
             print(f"⚠️ Error in save worker: {e}")
 
-def get_current_action(mouse_delta):
-    """Construct the action vector for the current state."""
-    with data_lock:
-        key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]
-        action = (
-            key_vector +
-            list(mouse_delta) +
-            [mouse_buttons["left"], mouse_buttons["right"]]
-        )
-        return action.copy(), pressed_keys.copy()
-
-# ---------------------- Signal Handling ----------------------
+# ---------------------- Signal Handling & Main Logic ----------------------
 def signal_handler(signum, frame):
-    """Handle system signals for graceful shutdown."""
     global running
     print(f"\n🛑 Received signal {signum}. Stopping recording gracefully...")
     running = False
 
-# ---------------------- Main ----------------------
+def is_action_happening(action, mouse_delta):
+    """Check if the current state constitutes a recordable action."""
+    key_press = any(action[:len(COMMON_KEYS)])
+    mouse_click = any(action[len(COMMON_KEYS)+2:])
+    mouse_move = abs(mouse_delta[0]) > MOUSE_MOVE_ACTION_THRESHOLD or \
+                 abs(mouse_delta[1]) > MOUSE_MOVE_ACTION_THRESHOLD
+    return key_press or mouse_click or mouse_move
+
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -153,7 +126,7 @@ if __name__ == "__main__":
                 try:
                     loaded_actions = np.load(actions_path).tolist()
                     if len(loaded_actions) > start_index:
-                        print(f"⚠️ Truncating action file from {len(loaded_actions)} to {start_index} entries.")
+                        print(f"⚠️ Truncating action file to {start_index} entries to match frames.")
                         actions = loaded_actions[:start_index]
                     else:
                         actions = loaded_actions
@@ -163,19 +136,17 @@ if __name__ == "__main__":
                     actions, start_index = [], 0
 
     print("\n" + "=" * 50)
-    print("🟢 Starting ASYNCHRONOUS data recording in 5 seconds...")
-    print("   Play the game normally.")
+    print("🟢 Starting INTELLIGENT data recording in 5 seconds...")
+    print("   Play the game normally. Only action sequences will be saved.")
     print("   Press [F2] or [F12] to quit gracefully.")
     print("=" * 50 + "\n")
     time.sleep(5)
 
-    # Start input listeners
     key_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
     mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)
     key_listener.start()
     mouse_listener.start()
 
-    # Start worker threads
     capture_thread = threading.Thread(target=screen_capture_worker, daemon=True)
     save_thread = threading.Thread(target=file_save_worker, daemon=True)
     capture_thread.start()
@@ -184,92 +155,99 @@ if __name__ == "__main__":
     frame_interval = 1.0 / RECORDING_FPS
     frame_index = start_index
     last_mouse_position = current_mouse_position
+    
+    # NEW: Data structures for intelligent filtering
+    temp_buffer = deque(maxlen=IDLE_FRAME_BUFFER_SIZE)
+    frames_to_save_after_action = 0
+    is_saving_action = False
 
     try:
         while running:
             loop_start_time = time.time()
             
-            # --- Get Latest Frame ---
-            # Drain the queue to get the most recent frame, ensuring data is not stale
-            latest_frame = None
-            while not frame_queue.empty():
-                try:
-                    latest_frame, _ = frame_queue.get_nowait()
-                except queue.Empty:
-                    break
+            latest_frame, _ = frame_queue.get() # Block until a new frame is ready
             
-            if latest_frame is None:
-                time.sleep(0.001) # Wait briefly if no frames are available
-                continue
-            
-            # --- Calculate Mouse Delta ---
-            with data_lock:
-                pos_now = current_mouse_position
+            with data_lock: pos_now = current_mouse_position
             
             delta_x = (pos_now[0] - last_mouse_position[0]) / SCREEN_WIDTH
             delta_y = (pos_now[1] - last_mouse_position[1]) / SCREEN_HEIGHT
             mouse_delta = (delta_x, delta_y)
             last_mouse_position = pos_now
 
-            # --- Get Action & Save ---
-            action, current_keys = get_current_action(mouse_delta)
+            with data_lock:
+                key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]
+                action = key_vector + list(mouse_delta) + [mouse_buttons["left"], mouse_buttons["right"]]
             
-            expected_length = len(COMMON_KEYS) + 2 + 2
-            if len(action) != expected_length:
-                print(f"⚠️ Invalid action length: {len(action)}. Skipping frame {frame_index}.")
-                continue
-
-            actions.append(action)
-            frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
-            save_queue.put((latest_frame, frame_path))
-
-            # Log if there is any action
-            mouse_moved = abs(delta_x) > 1e-6 or abs(delta_y) > 1e-6
-            if current_keys or any(action[-2:]) or mouse_moved:
-                print(f"Frame {frame_index}: keys={list(current_keys)}, delta=({delta_x:.3f}, {delta_y:.3f}), "
-                      f"click_L={action[-2]}, click_R={action[-1]}, SaveQueue: {save_queue.qsize()}")
-
-            frame_index += 1
+            temp_buffer.append({'frame': latest_frame, 'action': action})
             
-            # Maintain the target FPS
+            if is_action_happening(action, mouse_delta):
+                if not is_saving_action:
+                    # Action just started, flush the buffer
+                    print(f"\n--- ACTION DETECTED! Saving preceding {len(temp_buffer)} frames. ---")
+                    for item in list(temp_buffer):
+                        frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
+                        save_queue.put((item['frame'], frame_path, item['action']))
+                        actions.append(item['action'])
+                        frame_index += 1
+                    temp_buffer.clear()
+                    is_saving_action = True
+
+                # Reset the countdown for saving frames after the action stops
+                frames_to_save_after_action = ACTION_POST_SAVE_FRAMES
+            
+            if is_saving_action:
+                # We are in an active action sequence, save the current frame
+                frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
+                save_queue.put((latest_frame, frame_path, action))
+                actions.append(action)
+
+                print(f"Frame {frame_index} [RECORDING]: keys={list(p for p,k in zip(COMMON_KEYS, key_vector) if k)}, "
+                      f"delta=({delta_x:.3f}, {delta_y:.3f}), click_L/R={action[-2]}/{action[-1]}, SaveQueue: {save_queue.qsize()}", end='\r')
+                
+                frame_index += 1
+
+                if not is_action_happening(action, mouse_delta):
+                    frames_to_save_after_action -= 1
+                    if frames_to_save_after_action <= 0:
+                        is_saving_action = False
+                        print("\n--- ACTION ENDED. Pausing recording. ---")
+            else:
+                print(f"Idle... Buffer: {len(temp_buffer)}/{IDLE_FRAME_BUFFER_SIZE} | Watching for actions... ", end='\r')
+
+
             elapsed_time = time.time() - loop_start_time
             sleep_time = frame_interval - elapsed_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            if sleep_time > 0: time.sleep(sleep_time)
 
     except KeyboardInterrupt:
         print("\n🛑 Recording interrupted by user.")
     finally:
-        if running:
-            running = False # Ensure running flag is set to false
-        
+        if running: running = False
         print("\n🛑 Shutting down... please wait.")
-        
-        # Signal workers to stop
         stop_event.set()
         
-        # Stop input listeners
         key_listener.stop()
         mouse_listener.stop()
+
+        # NEW: Final flush of the buffer in case recording is stopped mid-action
+        if is_saving_action and temp_buffer:
+            print("   Flushing final items from temporary buffer...")
+            for item in list(temp_buffer):
+                frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
+                save_queue.put((item['frame'], frame_path, item['action']))
+                actions.append(item['action'])
+                frame_index += 1
         
-        # Wait for worker threads to finish
-        print("   Waiting for capture thread to terminate...")
+        print("   Waiting for capture thread...")
         capture_thread.join(timeout=2)
         print("   Waiting for file save thread to flush queue...")
-        save_thread.join(timeout=10) # Give it time to save remaining frames
+        save_queue.join()
+        save_thread.join(timeout=10)
         
-        if save_thread.is_alive():
-            print("   ⚠️ Save thread timed out. Some frames may not be saved.")
-
-        # Save actions file
         if actions:
             try:
-                # Ensure actions and frames are aligned
-                final_action_count = frame_index - start_index
-                valid_actions = actions[:final_action_count]
-                
-                np.save(actions_path, np.array(valid_actions, dtype=np.float32))
-                print(f"\n✅ Saved {len(valid_actions)} actions to {actions_path}.")
+                np.save(actions_path, np.array(actions, dtype=np.float32))
+                print(f"\n✅ Saved {len(actions)} actions to {actions_path}.")
             except Exception as e:
                 print(f"\n❌ Error saving actions: {e}")
         else:

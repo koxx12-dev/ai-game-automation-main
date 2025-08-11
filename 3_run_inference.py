@@ -172,6 +172,10 @@ def apply_output(output):
     delta_x = mouse_delta[0].item() * SCREEN_WIDTH
     delta_y = mouse_delta[1].item() * SCREEN_HEIGHT
     
+    # ADDED (for debugging): Print the raw and scaled mouse values.
+    # You can remove this once you confirm it's working.
+    print(f"AI Output -> Raw Delta: ({mouse_delta[0].item():.3f}, {mouse_delta[1].item():.3f}) | Scaled Move: ({delta_x:.1f}, {delta_y:.1f})", end='\r')
+
     # Apply a deadzone to prevent jitter when the model wants to stay still
     if abs(delta_x) > MOUSE_DEADZONE or abs(delta_y) > MOUSE_DEADZONE:
         mouse_controller.move(delta_x, delta_y)

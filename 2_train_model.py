@@ -257,8 +257,8 @@ def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
     mse_loss = nn.MSELoss()
     loss_pos = mse_loss(pos_out, pos_tgt)
     
-    # Weight the losses
-    total_loss = loss_keys + 3.0 * loss_clicks + 0.5 * loss_pos
+    # MODIFIED: Drastically reduced the weight for position loss.
+    total_loss = 2.0 * loss_keys + 3.0 * loss_clicks + 1.0 * loss_pos # Example of more balanced weights
     
     # Log individual losses if writer is provided
     if writer and step is not None:
@@ -465,8 +465,8 @@ def train(start_tensorboard_auto=True):
     train_ds = AugmentedDataset(train_subset, train_transform)
     val_ds = AugmentedDataset(val_subset, val_transform)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=6, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=6, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Output dim is keys + mouse delta (x, y) + mouse clicks (L, R)

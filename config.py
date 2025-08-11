@@ -12,9 +12,9 @@ MODEL_SAVE_DIR = "game_model_checkpoints"  # Directory for epoch checkpoints
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 
-# === FPS-OPTIMIZED IMAGE & SEQUENCE SETTINGS ===
-IMG_WIDTH = 480
-IMG_HEIGHT = 360
+# Options: 360x240 (fast), 480x320 (balanced), 640x480 (detailed)
+IMG_WIDTH = 360
+IMG_HEIGHT = 240
 SEQUENCE_LENGTH = 30  # Number of frames the model sees at once
 
 # === FPS-OPTIMIZED RECORDING & INFERENCE FPS ===
@@ -25,10 +25,10 @@ INFERENCE_FPS = 30
 # This feature saves only frames with meaningful actions, reducing dataset size.
 IDLE_FRAME_BUFFER_SIZE = 60 # Frames to hold before an action (e.g., 60 frames = 2s at 30 FPS)
 ACTION_POST_SAVE_FRAMES = 45 # Frames to save *after* the last action (e.g., 45 frames = 1.5s at 30 FPS)
-MOUSE_MOVE_ACTION_THRESHOLD = 0.001 # Normalized sensitivity for mouse movement to be considered an action
+MOUSE_MOVE_ACTION_THRESHOLD = 0.005 # Normalized sensitivity for mouse movement to be considered an action
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 EPOCHS = 50
 LEARNING_RATE = 2e-4
 

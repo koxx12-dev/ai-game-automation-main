@@ -150,8 +150,8 @@ def on_press(key):
     global running, ai_enabled
     if key == keyboard.Key.f12:
         running = False
-        print("🛑 Quit key (F12) pressed.")
-    elif key == keyboard.Key.f10:
+        print("🛑 Quit key (F2) pressed.")
+    elif key == keyboard.Key.f2:
         ai_enabled = not ai_enabled
         if not ai_enabled: release_all_inputs()
         status = "ENABLED" if ai_enabled else "DISABLED"
@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
     print("\n" + "="*50)
     print("🟢 Starting AI inference...")
-    print("   Press [F10] to ENABLE/DISABLE AI control.")
+    print("   Press [F2] to ENABLE/DISABLE AI control.")
     print("   Press [F12] to quit.")
     print("="*50 + "\n")
 

@@ -15,11 +15,11 @@ MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 # Options: 360x240 (fast), 480x320 (balanced), 640x480 (detailed)
 IMG_WIDTH = 360
 IMG_HEIGHT = 240
-SEQUENCE_LENGTH = 30  # Number of frames the model sees at once
+SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
 
 # === FPS-OPTIMIZED RECORDING & INFERENCE FPS ===
-RECORDING_FPS = 30
-INFERENCE_FPS = 30
+RECORDING_FPS = 15
+INFERENCE_FPS = 15
 
 # === INTELLIGENT DATA FILTERING (NEW) ===
 # This feature saves only frames with meaningful actions, reducing dataset size.
@@ -29,7 +29,7 @@ MOUSE_MOVE_ACTION_THRESHOLD = 0.005 # Normalized sensitivity for mouse movement 
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
 BATCH_SIZE = 16
-EPOCHS = 50
+EPOCHS = 25
 LEARNING_RATE = 2e-4
 
 # === TRANSFORMER MODEL PARAMETERS ===
@@ -39,7 +39,7 @@ N_LAYERS = 3
 DROPOUT = 0.1
 
 # === DATASET BALANCING & VALIDATION ===
-OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 2
+OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 1
 VALIDATION_SPLIT = 0.15
 VALIDATION_WINDOW = 3
 THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
@@ -47,7 +47,7 @@ THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 # === FPS-OPTIMIZED INFERENCE THRESHOLDS ===
 KEY_THRESHOLD = 0.5
 CLICK_THRESHOLD = 0.5
-MOUSE_DEADZONE = 1
+MOUSE_DEADZONE = 3 # pixel movement dead zone
 
 # === EARLY STOPPING & TENSORBOARD ===
 EARLY_STOPPING_PATIENCE = 8
@@ -56,9 +56,9 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_improved"
 
 # === FPS-OPTIMIZED KEY MAPPING ===
 COMMON_KEYS = [
-    "w", "a", "s", "d",
-    "1", "2", "3", "4", "5", "6",
-    "e", "r", "f", "m", "tab", "space", "shift", "ctrl",
+    "w", "a", "s", "d", "q", "e",
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    "z", "t", "tab", "space", "`", "F1"#, "shift", "ctrl",
 ]
 
 KEY_MAPPING = {

@@ -258,7 +258,8 @@ def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
     loss_pos = mse_loss(pos_out, pos_tgt)
     
     # MODIFIED: Drastically reduced the weight for position loss.
-    total_loss = 2.0 * loss_keys + 3.0 * loss_clicks + 1.0 * loss_pos # Example of more balanced weights
+#    total_loss = 2.5 * loss_keys + 3.0 * loss_clicks + 1.0 * loss_pos # Example of more balanced weights
+    total_loss = 1.5 * loss_keys + 1.0 * loss_clicks + 1.0 * loss_pos # Example of more balanced weights
     
     # Log individual losses if writer is provided
     if writer and step is not None:

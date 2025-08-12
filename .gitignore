@@ -3,3 +3,4 @@
 /data_human/
 /__pycache__/
 /runs/
+/game_model_checkpoints/

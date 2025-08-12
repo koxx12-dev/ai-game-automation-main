@@ -22,7 +22,7 @@ with mss.mss() as sct:
 print(f"Detected screen resolution: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
 print(f"Recording at {IMG_WIDTH}x{IMG_HEIGHT} @ {RECORDING_FPS} FPS")
 print(f"Keys being recorded: {len(COMMON_KEYS)}")
-print(f"Intelligent Filtering: ENABLED")
+print(f"Intelligent Filtering: ENABLED (Action-Change Trigger)")
 print(f"  - Idle Buffer Size: {IDLE_FRAME_BUFFER_SIZE} frames (~{IDLE_FRAME_BUFFER_SIZE/RECORDING_FPS:.1f}s)")
 print(f"  - Post-Action Save: {ACTION_POST_SAVE_FRAMES} frames (~{ACTION_POST_SAVE_FRAMES/RECORDING_FPS:.1f}s)")
 print(f"  - Mouse Action Threshold: {MOUSE_MOVE_ACTION_THRESHOLD}")
@@ -100,10 +100,10 @@ def signal_handler(signum, frame):
     print(f"\n🛑 Received signal {signum}. Stopping recording gracefully...")
     running = False
 
-def is_action_happening(action, mouse_delta):
+def is_action_happening(key_vector, click_vector, mouse_delta):
     """Check if the current state constitutes a recordable action."""
-    key_press = any(action[:len(COMMON_KEYS)])
-    mouse_click = any(action[len(COMMON_KEYS)+2:])
+    key_press = any(key_vector)
+    mouse_click = any(click_vector)
     mouse_move = abs(mouse_delta[0]) > MOUSE_MOVE_ACTION_THRESHOLD or \
                  abs(mouse_delta[1]) > MOUSE_MOVE_ACTION_THRESHOLD
     return key_press or mouse_click or mouse_move
@@ -156,10 +156,11 @@ if __name__ == "__main__":
     frame_index = start_index
     last_mouse_position = current_mouse_position
     
-    # NEW: Data structures for intelligent filtering
+    # Data structures for intelligent filtering
     temp_buffer = deque(maxlen=IDLE_FRAME_BUFFER_SIZE)
     frames_to_save_after_action = 0
     is_saving_action = False
+    last_action_state = None # NEW: Track the previous action state
 
     try:
         while running:
@@ -167,23 +168,33 @@ if __name__ == "__main__":
             
             latest_frame, _ = frame_queue.get() # Block until a new frame is ready
             
-            with data_lock: pos_now = current_mouse_position
+            with data_lock:
+                pos_now = current_mouse_position
+                key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]
+                click_vector = [mouse_buttons["left"], mouse_buttons["right"]]
             
             delta_x = (pos_now[0] - last_mouse_position[0]) / SCREEN_WIDTH
             delta_y = (pos_now[1] - last_mouse_position[1]) / SCREEN_HEIGHT
             mouse_delta = (delta_x, delta_y)
             last_mouse_position = pos_now
 
-            with data_lock:
-                key_vector = [int(k in pressed_keys) for k in COMMON_KEYS]
-                action = key_vector + list(mouse_delta) + [mouse_buttons["left"], mouse_buttons["right"]]
-            
+            action = key_vector + list(mouse_delta) + click_vector
             temp_buffer.append({'frame': latest_frame, 'action': action})
+
+            # --- NEW: Define action state based on discrete inputs (keys and clicks) ---
+            current_action_state = (tuple(key_vector), tuple(click_vector))
             
-            if is_action_happening(action, mouse_delta):
+            # --- NEW: Define trigger based on change in state or significant movement ---
+            significant_move = abs(delta_x) > MOUSE_MOVE_ACTION_THRESHOLD or abs(delta_y) > MOUSE_MOVE_ACTION_THRESHOLD
+            action_has_changed = (current_action_state != last_action_state)
+            
+            is_currently_active = is_action_happening(key_vector, click_vector, mouse_delta)
+
+            # Trigger recording if the action state changes OR there's significant mouse movement
+            if action_has_changed or significant_move:
                 if not is_saving_action:
                     # Action just started, flush the buffer
-                    print(f"\n--- ACTION DETECTED! Saving preceding {len(temp_buffer)} frames. ---")
+                    print(f"\n--- ACTION CHANGE DETECTED! Saving preceding {len(temp_buffer)} frames. ---")
                     for item in list(temp_buffer):
                         frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
                         save_queue.put((item['frame'], frame_path, item['action']))
@@ -191,12 +202,12 @@ if __name__ == "__main__":
                         frame_index += 1
                     temp_buffer.clear()
                     is_saving_action = True
-
-                # Reset the countdown for saving frames after the action stops
+                
+                # Reset the countdown to save frames after this action stops
                 frames_to_save_after_action = ACTION_POST_SAVE_FRAMES
-            
+
             if is_saving_action:
-                # We are in an active action sequence, save the current frame
+                # We are in an active recording sequence, so save the current frame
                 frame_path = os.path.join(FRAME_DIR, f"frame_{frame_index:06d}.jpg")
                 save_queue.put((latest_frame, frame_path, action))
                 actions.append(action)
@@ -205,15 +216,18 @@ if __name__ == "__main__":
                       f"delta=({delta_x:.3f}, {delta_y:.3f}), click_L/R={action[-2]}/{action[-1]}, SaveQueue: {save_queue.qsize()}", end='\r')
                 
                 frame_index += 1
-
-                if not is_action_happening(action, mouse_delta):
+                
+                # If no action is currently happening, start the countdown to stop recording
+                if not is_currently_active:
                     frames_to_save_after_action -= 1
                     if frames_to_save_after_action <= 0:
                         is_saving_action = False
                         print("\n--- ACTION ENDED. Pausing recording. ---")
             else:
-                print(f"Idle... Buffer: {len(temp_buffer)}/{IDLE_FRAME_BUFFER_SIZE} | Watching for actions... ", end='\r')
+                print(f"Idle... Buffer: {len(temp_buffer)}/{IDLE_FRAME_BUFFER_SIZE} | Watching for action changes... ", end='\r')
 
+            # Update the last action state for the next frame
+            last_action_state = current_action_state
 
             elapsed_time = time.time() - loop_start_time
             sleep_time = frame_interval - elapsed_time
@@ -229,7 +243,7 @@ if __name__ == "__main__":
         key_listener.stop()
         mouse_listener.stop()
 
-        # NEW: Final flush of the buffer in case recording is stopped mid-action
+        # Final flush of the buffer in case recording is stopped mid-action
         if is_saving_action and temp_buffer:
             print("   Flushing final items from temporary buffer...")
             for item in list(temp_buffer):

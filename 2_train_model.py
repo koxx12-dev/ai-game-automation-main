@@ -20,28 +20,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from config import * # Import all settings
 
-# === EARLY STOPPING ===
-class EarlyStopping:
-    """Stops training when a monitored metric has stopped improving."""
-    def __init__(self, patience=EARLY_STOPPING_PATIENCE, min_delta=EARLY_STOPPING_MIN_DELTA):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-
-    def __call__(self, metric):
-        if self.best_score is None:
-            self.best_score = metric
-            return
-        if metric < self.best_score + self.min_delta:
-            self.counter += 1
-        else:
-            self.best_score = metric
-            self.counter = 0
-        if self.counter >= self.patience:
-            self.early_stop = True
-
 # === DATASET ===
 class WoWSequenceDataset(Dataset):
     """Custom dataset for loading sequences of frames and actions."""
@@ -258,7 +236,7 @@ def weighted_bce_mse_loss(outputs, targets, writer=None, step=None):
     loss_pos = mse_loss(pos_out, pos_tgt)
     
     # MODIFIED: Drastically reduced the weight for position loss.
-#    total_loss = 2.5 * loss_keys + 3.0 * loss_clicks + 1.0 * loss_pos # Example of more balanced weights
+#    total_loss = 2.5 * loss_keys + 3.0 * loss_clicks + 1.0 * loss_pos # old weights
     total_loss = 1.5 * loss_keys + 1.0 * loss_clicks + 1.0 * loss_pos # Example of more balanced weights
     
     # Log individual losses if writer is provided
@@ -416,7 +394,6 @@ def train(start_tensorboard_auto=True):
         tb_process = start_tensorboard()
     
     writer = SummaryWriter(log_dir=TENSORBOARD_LOG_DIR)
-    early_stopper = EarlyStopping()
     
     # Define separate transforms for training (with augmentation) and validation
     train_transform = transforms.Compose([
@@ -540,11 +517,6 @@ def train(start_tensorboard_auto=True):
             writer.add_scalar("F1/validation", val_f1, epoch)
             writer.add_scalar("LearningRate", optimizer.param_groups[0]['lr'], epoch)
             scheduler.step(val_f1)
-
-            early_stopper(val_f1)
-            if early_stopper.early_stop:
-                print(f"🛑 Early stopping triggered at epoch {epoch}.")
-                break
 
             ckpt_path = MODEL_SAVE_PATH_TEMPLATE.format(epoch)
             torch.save({

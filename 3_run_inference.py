@@ -261,8 +261,14 @@ if __name__ == "__main__":
                     
                     with torch.no_grad():
                         input_tensor = torch.stack(list(frame_sequence)).unsqueeze(0).to(device)
+                        # In the main loop of 3_run_inference.py
                         output = model(input_tensor)
-                        apply_output(output[:, -1, :].squeeze())
+
+                        # --- NEW: Average the last N predictions for smoother control ---
+                        # You can experiment with the number of frames to average (e.g., -3:, -4:)
+                        SMOOTHING_WINDOW = 3
+                        smoothed_output = output[:, -SMOOTHING_WINDOW:, :].mean(dim=1).squeeze()
+                        apply_output(smoothed_output)
             
             time.sleep(0.001)
             

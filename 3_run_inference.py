@@ -169,8 +169,9 @@ def apply_output(output):
     # --- MOUSE MOVEMENT ---
     # The model outputs a normalized delta in the range [-1, 1].
     # We scale this back to pixel values for movement.
-    delta_x = mouse_delta[0].item() * SCREEN_WIDTH
-    delta_y = mouse_delta[1].item() * SCREEN_HEIGHT
+    move_sensitivity = max(SCREEN_WIDTH, SCREEN_HEIGHT) 
+    delta_x = mouse_delta[0].item() * move_sensitivity
+    delta_y = mouse_delta[1].item() * move_sensitivity
     
     # ADDED (for debugging): Print the raw and scaled mouse values.
     # You can remove this once you confirm it's working.

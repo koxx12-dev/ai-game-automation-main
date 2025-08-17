@@ -15,7 +15,7 @@ MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 # Options: 360x240 (fast), 480x320 (balanced), 640x480 (detailed)
 IMG_WIDTH = 360
 IMG_HEIGHT = 240
-SEQUENCE_LENGTH = 15  # Number of frames the model sees at once
+SEQUENCE_LENGTH = 30  # Number of frames the model sees at once
 
 # === FPS-OPTIMIZED RECORDING & INFERENCE FPS ===
 RECORDING_FPS = 15
@@ -24,12 +24,12 @@ INFERENCE_FPS = 15
 # === INTELLIGENT DATA FILTERING (NEW) ===
 # This feature saves only frames with meaningful actions, reducing dataset size.
 IDLE_FRAME_BUFFER_SIZE = 60 # Frames to hold before an action (e.g., 60 frames = 2s at 30 FPS)
-ACTION_POST_SAVE_FRAMES = 45 # Frames to save *after* the last action (e.g., 45 frames = 1.5s at 30 FPS)
+ACTION_POST_SAVE_FRAMES = 30 # Frames to save *after* the last action (e.g., 45 frames = 1.5s at 30 FPS)
 MOUSE_MOVE_ACTION_THRESHOLD = 0.005 # Normalized sensitivity for mouse movement to be considered an action
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
 BATCH_SIZE = 16
-EPOCHS = 25
+EPOCHS = 10
 LEARNING_RATE = 2e-4
 
 # === TRANSFORMER MODEL PARAMETERS ===
@@ -56,7 +56,7 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_improved"
 COMMON_KEYS = [
     "w", "a", "s", "d", "q", "e",
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-    "z", "t", "tab", "space", "`", "F1"#, "shift", "ctrl",
+    "z", "t", "tab", "space", "`", "f1"#, "shift", "ctrl",
 ]
 
 KEY_MAPPING = {

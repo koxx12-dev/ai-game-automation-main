@@ -398,9 +398,19 @@ def train(start_tensorboard_auto=True):
     # Define separate transforms for training (with augmentation) and validation
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        # More aggressive color augmentation
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.15),
+        
+        # NEW: Add random cropping and rotation
+        transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
+        transforms.RandomResizedCrop(size=(IMG_HEIGHT, IMG_WIDTH), scale=(0.9, 1.0)),
+
+        # Existing perspective transform
         transforms.RandomPerspective(distortion_scale=0.1, p=0.2),
-        transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
+
+        # NEW: Add a chance of Gaussian blur
+        transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.3),
+        
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])

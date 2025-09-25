@@ -13,23 +13,23 @@ os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 MODEL_SAVE_PATH_TEMPLATE = os.path.join(MODEL_SAVE_DIR, "model_epoch_{}.pth")
 
 # Options: 360x240 (fast), 480x320 (balanced), 640x480 (detailed)
-IMG_WIDTH = 360
-IMG_HEIGHT = 240
+IMG_WIDTH = 480
+IMG_HEIGHT = 320
 SEQUENCE_LENGTH = 30  # Number of frames the model sees at once
 
 # === FPS-OPTIMIZED RECORDING & INFERENCE FPS ===
-RECORDING_FPS = 15
-INFERENCE_FPS = 15
+RECORDING_FPS = 20
+INFERENCE_FPS = 20
 
 # === INTELLIGENT DATA FILTERING (NEW) ===
 # This feature saves only frames with meaningful actions, reducing dataset size.
-IDLE_FRAME_BUFFER_SIZE = 60 # Frames to hold before an action (e.g., 60 frames = 2s at 30 FPS)
-ACTION_POST_SAVE_FRAMES = 30 # Frames to save *after* the last action (e.g., 45 frames = 1.5s at 30 FPS)
+IDLE_FRAME_BUFFER_SIZE = 30 # Frames to hold before an action (e.g., 60 frames = 2s at 30 FPS)
+ACTION_POST_SAVE_FRAMES = 15 # Frames to save *after* the last action (e.g., 45 frames = 1.5s at 30 FPS)
 MOUSE_MOVE_ACTION_THRESHOLD = 0.005 # Normalized sensitivity for mouse movement to be considered an action
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
 BATCH_SIZE = 16
-EPOCHS = 10
+EPOCHS = 100
 LEARNING_RATE = 2e-4
 
 # === TRANSFORMER MODEL PARAMETERS ===
@@ -39,7 +39,7 @@ N_LAYERS = 3
 DROPOUT = 0.1
 
 # === DATASET BALANCING & VALIDATION ===
-OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 2
+OVERSAMPLE_ACTION_FRAMES_MULTIPLIER = 3
 VALIDATION_SPLIT = 0.15
 VALIDATION_WINDOW = 3
 THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
@@ -47,16 +47,16 @@ THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 # === FPS-OPTIMIZED INFERENCE THRESHOLDS ===
 KEY_THRESHOLD = 0.5
 CLICK_THRESHOLD = 0.5
-MOUSE_DEADZONE = 3 # pixel movement dead zone
+MOUSE_DEADZONE = 2 # pixel movement dead zone
 
 # === TENSORBOARD ===
 TENSORBOARD_LOG_DIR = "runs/behavior_cloning_improved"
 
-# === FPS-OPTIMIZED KEY MAPPING ===
+# === USED KEY MAPPING ===
 COMMON_KEYS = [
-    "w", "a", "s", "d", "q", "e",
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-    "z", "t", "tab", "space", "`", "f1"#, "shift", "ctrl",
+    "w", "a", "s", "d", "q", "e", "f", "r",
+    "1", "2", "3", "4", "5", "6"#, "7", "8", "9", "0",
+    "tab", "space"#, "`", "f1"#, "shift", "ctrl",
 ]
 
 KEY_MAPPING = {

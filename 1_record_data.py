@@ -7,6 +7,7 @@ import signal
 import numpy as np
 import threading
 import queue
+import pygetwindow as gw  # Import the library
 from collections import deque
 from pynput import keyboard, mouse
 from config import * # Import all settings from the config file
@@ -14,13 +15,31 @@ from config import * # Import all settings from the config file
 # ---------------------- Setup ----------------------
 os.makedirs(FRAME_DIR, exist_ok=True)
 
-with mss.mss() as sct:
-    monitor = sct.monitors[1]
-    SCREEN_WIDTH = monitor["width"]
-    SCREEN_HEIGHT = monitor["height"]
+# --- NEW: ACTIVE WINDOW SELECTION ---
+print("Please focus the target window you want to record...")
+time.sleep(5)  # 5-second delay to switch to the game window
+try:
+    target_window = gw.getActiveWindow()
+    if not target_window:
+        raise Exception("No active window found!")
+    print(f"✅ Target window found: '{target_window.title}'")
+except Exception as e:
+    print(f"❌ Could not get active window: {e}. Exiting.")
+    exit()
 
-print(f"Detected screen resolution: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
-print(f"Recording at {IMG_WIDTH}x{IMG_HEIGHT} @ {RECORDING_FPS} FPS")
+# Use the window's geometry for capturing and mouse coordinate normalization
+SCREEN_WIDTH = target_window.width
+SCREEN_HEIGHT = target_window.height
+capture_region = {
+    "top": target_window.top,
+    "left": target_window.left,
+    "width": SCREEN_WIDTH,
+    "height": SCREEN_HEIGHT
+}
+# --- END OF NEW SECTION ---
+
+print(f"Recording from window: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
+print(f"Resizing to {IMG_WIDTH}x{IMG_HEIGHT} @ {RECORDING_FPS} FPS")
 print(f"Keys being recorded: {len(COMMON_KEYS)}")
 print(f"Intelligent Filtering: ENABLED (Action-Change Trigger)")
 print(f"  - Idle Buffer Size: {IDLE_FRAME_BUFFER_SIZE} frames (~{IDLE_FRAME_BUFFER_SIZE/RECORDING_FPS:.1f}s)")
@@ -36,7 +55,7 @@ running = True
 data_lock = threading.Lock()
 stop_event = threading.Event()
 
-frame_queue = queue.Queue(maxsize=RECORDING_FPS * 2) 
+frame_queue = queue.Queue(maxsize=RECORDING_FPS * 2)
 save_queue = queue.Queue()
 
 # ---------------------- Input Handling ----------------------
@@ -70,15 +89,15 @@ def on_move(x, y):
 # ---------------------- Asynchronous Worker Functions ----------------------
 def screen_capture_worker():
     with mss.mss() as sct:
-        monitor = sct.monitors[1]
         while not stop_event.is_set():
             try:
-                img = np.array(sct.grab(monitor))
+                # Use the 'capture_region' dictionary instead of 'monitor'
+                img = np.array(sct.grab(capture_region))
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
                 img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
                 frame_queue.put_nowait((img, time.time()))
             except queue.Full:
-                continue 
+                continue
             except Exception as e:
                 print(f"⚠️ Error in capture worker: {e}")
                 time.sleep(0.5)
@@ -136,11 +155,11 @@ if __name__ == "__main__":
                     actions, start_index = [], 0
 
     print("\n" + "=" * 50)
-    print("🟢 Starting INTELLIGENT data recording in 5 seconds...")
+    print("🟢 Starting INTELLIGENT data recording...")
     print("   Play the game normally. Only action sequences will be saved.")
     print("   Press [F2] or [F12] to quit gracefully.")
     print("=" * 50 + "\n")
-    time.sleep(5)
+    # Removed the 5-second sleep from here as it's now at the top
 
     key_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
     mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)

@@ -28,7 +28,7 @@ ACTION_POST_SAVE_FRAMES = 15 # Frames to save *after* the last action (e.g., 45 
 MOUSE_MOVE_ACTION_THRESHOLD = 0.005 # Normalized sensitivity for mouse movement to be considered an action
 
 # === FPS-OPTIMIZED TRAINING PARAMETERS ===
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 EPOCHS = 100
 LEARNING_RATE = 2e-4
 
@@ -54,9 +54,10 @@ TENSORBOARD_LOG_DIR = "runs/behavior_cloning_improved"
 
 # === USED KEY MAPPING ===
 COMMON_KEYS = [
-    "w", "a", "s", "d", "q", "e", "f", "r",
-    "1", "2", "3", "4", "5", "6"#, "7", "8", "9", "0",
-    "tab", "space"#, "`", "f1"#, "shift", "ctrl",
+    #"w", "a", "s", "d", "q", "e", "f", "r",
+    #"1", "2", "3", "4", "5", "6"#, "7", "8", "9", "0",
+    #"tab", "space"#, "`", "f1"#, "shift", "ctrl",
+    "space"
 ]
 
 KEY_MAPPING = {

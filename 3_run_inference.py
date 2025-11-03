@@ -6,6 +6,7 @@ import mss
 import time
 import math
 import os
+import pygetwindow as gw  # Import the library
 from collections import deque
 from pynput.keyboard import Controller as KeyboardController
 from pynput.mouse import Controller as MouseController, Button
@@ -13,10 +14,26 @@ from pynput import keyboard
 from torchvision import transforms
 from config import * # Import all settings from the config file
 
-# --- SCREEN DIMENSIONS ---
-with mss.mss() as sct:
-    monitor = sct.monitors[1]
-SCREEN_WIDTH, SCREEN_HEIGHT = monitor["width"], monitor["height"]
+print("Please focus the target window for AI inference...")
+time.sleep(5)  # 5-second delay to switch to the game window
+try:
+    target_window = gw.getActiveWindow()
+    if not target_window:
+        raise Exception("No active window found!")
+    print(f"✅ Target window for AI: '{target_window.title}'")
+except Exception as e:
+    print(f"❌ Could not get active window: {e}. Exiting.")
+    exit()
+
+# Use the window's geometry for capturing and mouse movement scaling
+SCREEN_WIDTH = target_window.width
+SCREEN_HEIGHT = target_window.height
+capture_region = {
+    "top": target_window.top,
+    "left": target_window.left,
+    "width": SCREEN_WIDTH,
+    "height": SCREEN_HEIGHT
+}
 
 # === POSITIONAL ENCODING ===
 class PositionalEncoding(nn.Module):
@@ -150,7 +167,7 @@ def on_press(key):
     global running, ai_enabled
     if key == keyboard.Key.f12:
         running = False
-        print("🛑 Quit key (F2) pressed.")
+        print("🛑 Quit key (F12) pressed.")
     elif key == keyboard.Key.f2:
         ai_enabled = not ai_enabled
         if not ai_enabled: release_all_inputs()
@@ -219,8 +236,8 @@ def apply_output(output):
 
 def capture_frame():
     with mss.mss() as sct:
-        monitor = sct.monitors[1]
-        img = cv2.cvtColor(np.array(sct.grab(monitor)), cv2.COLOR_BGRA2RGB)
+        # Replace 'monitor' with 'capture_region'
+        img = cv2.cvtColor(np.array(sct.grab(capture_region)), cv2.COLOR_BGRA2RGB)
         return transform(img)
 
 def release_all_inputs():
@@ -262,11 +279,9 @@ if __name__ == "__main__":
                     
                     with torch.no_grad():
                         input_tensor = torch.stack(list(frame_sequence)).unsqueeze(0).to(device)
-                        # In the main loop of 3_run_inference.py
                         output = model(input_tensor)
 
                         # --- NEW: Average the last N predictions for smoother control ---
-                        # You can experiment with the number of frames to average (e.g., -3:, -4:)
                         SMOOTHING_WINDOW = 3
                         smoothed_output = output[:, -SMOOTHING_WINDOW:, :].mean(dim=1).squeeze()
                         apply_output(smoothed_output)
